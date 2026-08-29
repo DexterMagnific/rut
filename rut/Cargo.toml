@@ -1,0 +1,19 @@
+[package]
+name = "rut"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "*", features = ["full"] }
+async-trait = "*"
+chrono = { version = "*", features = ["serde"] }
+num_cpus = "*"
+rand = "*"
+rut-macros = { path = "../rut-macros" }
+
+[lib]
+name = "rut"
+path = "src/lib.rs"
+
+[dev-dependencies]
+trybuild = "*"

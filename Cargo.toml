@@ -1,0 +1,3 @@
+[workspace]
+members = ["rut", "rut-macros"]
+resolver = "2"
