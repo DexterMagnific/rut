@@ -1,0 +1,18 @@
+[package]
+name = "cargo-rut"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cargo-rut"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+walkdir = "2"
+regex = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+thiserror = "1"
+pathdiff = "0.2"
