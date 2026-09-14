@@ -5,23 +5,7 @@ use std::time::Duration;
 use crate::report::{BoxFuture, SuiteReport, TestCaseInfo, TestResult};
 pub use crate::reporters::{GTestReporter, JUnitReporter, StdoutReporter};
 
-#[derive(Debug, thiserror::Error)]
-pub enum ReporterError {
-    #[error("failed to write report to {path}: {source}")]
-    Write {
-        path: std::path::PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    #[error("failed to serialize JUnit report: {0}")]
-    Xml(String),
-
-    #[error("failed to serialize GTest JSON report: {0}")]
-    Json(String),
-}
-
-pub type ReporterResult<T> = std::result::Result<T, ReporterError>;
+pub type ReporterResult<T> = anyhow::Result<T>;
 
 pub trait TestReporterInternal: Send + Sync {
     fn report_start<'a>(
@@ -300,7 +284,84 @@ impl TestReporterInternal for MultiReporter {
 mod tests {
     use super::*;
     use crate::reporters::{GTestReporter, JUnitReporter};
+    use std::fmt;
     use tempfile::TempDir;
+
+    #[derive(Debug)]
+    struct CustomReporterError;
+
+    impl fmt::Display for CustomReporterError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("custom reporter failed")
+        }
+    }
+
+    impl std::error::Error for CustomReporterError {}
+
+    struct FailingCustomReporter {
+        report: Option<SuiteReport>,
+    }
+
+    #[async_trait]
+    impl TestReporter for FailingCustomReporter {
+        async fn report_start(
+            &mut self,
+            suite_name: &str,
+            test_cases: &[TestCaseInfo],
+            started_at: DateTime<Utc>,
+        ) -> ReporterResult<()> {
+            self.report = Some(SuiteReport::new(suite_name, test_cases, started_at));
+            Ok(())
+        }
+
+        async fn report_case_start(
+            &mut self,
+            _case_name: &str,
+            _test_count: usize,
+            _started_at: DateTime<Utc>,
+        ) -> ReporterResult<()> {
+            Ok(())
+        }
+
+        async fn report_test_start(
+            &mut self,
+            _case_name: &str,
+            _test_name: &str,
+        ) -> ReporterResult<()> {
+            Ok(())
+        }
+
+        async fn report_result(
+            &mut self,
+            _case_name: &str,
+            _result: &TestResult,
+        ) -> ReporterResult<()> {
+            Ok(())
+        }
+
+        async fn report_case_finish(
+            &mut self,
+            _case_name: &str,
+            _duration: Duration,
+            _total_duration: Duration,
+            _finished_at: DateTime<Utc>,
+        ) -> ReporterResult<()> {
+            Ok(())
+        }
+
+        async fn report_finish(
+            &mut self,
+            _duration: Duration,
+            _total_duration: Duration,
+            _finished_at: DateTime<Utc>,
+        ) -> ReporterResult<()> {
+            Err(CustomReporterError.into())
+        }
+
+        fn get_report(&self) -> &SuiteReport {
+            self.report.as_ref().expect("report_start not called")
+        }
+    }
 
     #[tokio::test]
     async fn multi_reporter_propagates_junit_write_failures() {
@@ -324,7 +385,12 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, ReporterError::Write { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to create report directory")
+        );
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
         assert_eq!(reporter.get_report().suite_name, "suite");
         assert_eq!(reporter.get_report().started_at, started_at);
         assert_eq!(reporter.get_report().finished_at, finished_at);
@@ -352,8 +418,34 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(error, ReporterError::Write { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to create report directory")
+        );
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
         assert_eq!(reporter.get_report().suite_name, "suite");
         assert_eq!(reporter.get_report().finished_at, finished_at);
+    }
+
+    #[tokio::test]
+    async fn custom_reporter_errors_remain_downcastable() {
+        let mut reporter = MultiReporter::new()
+            .add_reporter(Box::new(StdoutReporter::new()))
+            .add_reporter(Box::new(FailingCustomReporter { report: None }));
+        let started_at = Utc::now();
+        reporter
+            .report_start("suite", &[], started_at)
+            .await
+            .unwrap();
+
+        let error = reporter
+            .report_finish(Duration::ZERO, Duration::ZERO, started_at)
+            .await
+            .unwrap_err();
+
+        assert!(error.downcast_ref::<CustomReporterError>().is_some());
+        assert_eq!(error.to_string(), "custom reporter failed");
+        assert_eq!(reporter.get_report().suite_name, "suite");
     }
 }

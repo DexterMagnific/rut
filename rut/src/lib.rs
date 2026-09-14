@@ -17,8 +17,8 @@ pub use report::{
     TestResult, TestStatus,
 };
 pub use reporter::{
-    GTestReporter, JUnitReporter, MultiReporter, ReporterError, ReporterResult, StdoutReporter,
-    TestReporter, TestReporterInternal,
+    GTestReporter, JUnitReporter, MultiReporter, ReporterResult, StdoutReporter, TestReporter,
+    TestReporterInternal,
 };
 pub use runner::{ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunnerInternal};
 pub use rut_macros::suite;

@@ -379,6 +379,38 @@ let report = ParallelRunner::default()
 
 `MultiReporter` forwards runner events in order and returns the first reporter's completed report. Reporter callbacks are fallible, so serialization, directory creation, and write failures are returned by `.run().await` instead of being silently ignored. Both file reporters overwrite their destinations and record unfinished tests as skipped.
 
+`ReporterResult<T>` uses a type-erased `anyhow::Error`, so a custom reporter is not limited to
+framework-defined error variants. Standard errors work with `?`, and any custom error implementing
+`std::error::Error + Send + Sync + 'static` can be returned with `.into()`:
+
+```rust
+#[derive(Debug)]
+struct UploadError;
+
+impl std::fmt::Display for UploadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("report upload failed")
+    }
+}
+
+impl std::error::Error for UploadError {}
+
+async fn upload_report() -> Result<(), UploadError> {
+    // Upload the completed report.
+    Ok(())
+}
+
+async fn finish_custom_reporter() -> ReporterResult<()> {
+    upload_report().await?;
+    Ok(())
+}
+```
+
+Applications with a direct `anyhow` dependency can use `anyhow::Context` to add operation or path
+details while preserving the original error for chain inspection and downcasting. Code migrating
+from `ReporterError` should return its native errors with context instead of constructing or
+matching format-specific variants.
+
 `StdoutReporter` displays declaration and failure locations. `GTestReporter` writes declaration
 `file` and `line` fields plus a rut `column` extension. `JUnitReporter` writes `file`, `line`, and
 `column` attributes on `<testcase>` as common xUnit extensions. Both file reporters prefix failure

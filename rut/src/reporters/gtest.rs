@@ -1,5 +1,6 @@
 use crate::report::{BoxFuture, CaseReport, SuiteReport, TestCaseInfo, TestResult, TestStatus};
-use crate::reporter::{ReporterError, ReporterResult, TestReporterInternal};
+use crate::reporter::{ReporterResult, TestReporterInternal};
+use anyhow::Context;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -29,20 +30,21 @@ impl GTestReporter {
 
     fn write_report(&self) -> ReporterResult<()> {
         let json = serde_json::to_vec_pretty(&GTestRun::from(self.report()))
-            .map_err(|error| ReporterError::Json(error.to_string()))?;
+            .context("failed to serialize GTest JSON report")?;
         if let Some(parent) = self
             .path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent).map_err(|source| ReporterError::Write {
-                path: self.path.clone(),
-                source,
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create report directory {}", parent.display())
             })?;
         }
-        std::fs::write(&self.path, json).map_err(|source| ReporterError::Write {
-            path: self.path.clone(),
-            source,
+        std::fs::write(&self.path, json).with_context(|| {
+            format!(
+                "failed to write GTest JSON report to {}",
+                self.path.display()
+            )
         })
     }
 }
@@ -480,8 +482,12 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(error, ReporterError::Write { path: error_path, .. } if error_path == path)
+            error
+                .to_string()
+                .contains("failed to create report directory")
         );
+        assert!(error.to_string().contains("not-a-directory"));
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
     }
 
     #[tokio::test]

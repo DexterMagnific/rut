@@ -1,5 +1,6 @@
 use crate::report::{BoxFuture, SuiteReport, TestCaseInfo, TestResult, TestStatus};
-use crate::reporter::{ReporterError, ReporterResult, TestReporterInternal};
+use crate::reporter::{ReporterResult, TestReporterInternal};
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
@@ -34,15 +35,12 @@ impl JUnitReporter {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent).map_err(|source| ReporterError::Write {
-                path: self.path.clone(),
-                source,
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create report directory {}", parent.display())
             })?;
         }
-        std::fs::write(&self.path, xml).map_err(|source| ReporterError::Write {
-            path: self.path.clone(),
-            source,
-        })
+        std::fs::write(&self.path, xml)
+            .with_context(|| format!("failed to write JUnit report to {}", self.path.display()))
     }
 }
 
@@ -295,7 +293,7 @@ fn failure_message(test: &TestResult) -> String {
 fn write_event(writer: &mut Writer<Vec<u8>>, event: Event<'_>) -> ReporterResult<()> {
     writer
         .write_event(event)
-        .map_err(|error| ReporterError::Xml(error.to_string()))
+        .context("failed to serialize JUnit report")
 }
 
 fn seconds(duration: Duration) -> String {
@@ -443,7 +441,11 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(error, ReporterError::Write { path: error_path, .. } if error_path == path)
+            error
+                .to_string()
+                .contains("failed to create report directory")
         );
+        assert!(error.to_string().contains("not-a-directory"));
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
     }
 }
