@@ -3,11 +3,11 @@ use chrono::{DateTime, Utc};
 use std::time::Duration;
 
 use crate::report::{BoxFuture, SuiteReport, TestCaseInfo, TestResult};
-pub use crate::reporters::{JUnitReporter, StdoutReporter};
+pub use crate::reporters::{GTestReporter, JUnitReporter, StdoutReporter};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReporterError {
-    #[error("failed to write JUnit report to {path}: {source}")]
+    #[error("failed to write report to {path}: {source}")]
     Write {
         path: std::path::PathBuf,
         #[source]
@@ -16,6 +16,9 @@ pub enum ReporterError {
 
     #[error("failed to serialize JUnit report: {0}")]
     Xml(String),
+
+    #[error("failed to serialize GTest JSON report: {0}")]
+    Json(String),
 }
 
 pub type ReporterResult<T> = std::result::Result<T, ReporterError>;
@@ -296,7 +299,7 @@ impl TestReporterInternal for MultiReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reporters::JUnitReporter;
+    use crate::reporters::{GTestReporter, JUnitReporter};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -324,6 +327,33 @@ mod tests {
         assert!(matches!(error, ReporterError::Write { .. }));
         assert_eq!(reporter.get_report().suite_name, "suite");
         assert_eq!(reporter.get_report().started_at, started_at);
+        assert_eq!(reporter.get_report().finished_at, finished_at);
+    }
+
+    #[tokio::test]
+    async fn multi_reporter_propagates_gtest_write_failures() {
+        let directory = TempDir::new().unwrap();
+        let blocking_file = directory.path().join("not-a-directory");
+        std::fs::write(&blocking_file, "content").unwrap();
+        let mut reporter = MultiReporter::new()
+            .add_reporter(Box::new(StdoutReporter::new()))
+            .add_reporter(Box::new(GTestReporter::new(
+                blocking_file.join("report.json"),
+            )));
+
+        let started_at = Utc::now();
+        let finished_at = started_at + chrono::TimeDelta::seconds(1);
+        reporter
+            .report_start("suite", &[], started_at)
+            .await
+            .unwrap();
+        let error = reporter
+            .report_finish(Duration::ZERO, Duration::ZERO, finished_at)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ReporterError::Write { .. }));
+        assert_eq!(reporter.get_report().suite_name, "suite");
         assert_eq!(reporter.get_report().finished_at, finished_at);
     }
 }

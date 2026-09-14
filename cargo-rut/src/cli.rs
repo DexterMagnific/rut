@@ -53,6 +53,14 @@ pub struct RunArgs {
     /// Write one predictable JUnit XML file per selected suite
     #[arg(long, value_name = "DIR", conflicts_with = "junit")]
     pub junit_dir: Option<PathBuf>,
+
+    /// Write GoogleTest JSON for a single selected suite
+    #[arg(long, value_name = "FILE", conflicts_with = "gtest_dir")]
+    pub gtest: Option<PathBuf>,
+
+    /// Write one predictable GoogleTest JSON file per selected suite
+    #[arg(long, value_name = "DIR", conflicts_with = "gtest")]
+    pub gtest_dir: Option<PathBuf>,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -84,6 +92,8 @@ mod tests {
         assert!(!args.shuffle);
         assert_eq!(args.junit, None);
         assert_eq!(args.junit_dir, None);
+        assert_eq!(args.gtest, None);
+        assert_eq!(args.gtest_dir, None);
     }
 
     #[test]
@@ -144,6 +154,41 @@ mod tests {
             Ok(_) => panic!("conflicting JUnit options should be rejected"),
             Err(error) => error,
         };
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn parses_gtest_outputs_and_allows_junit_too() {
+        let args = run_args(&[
+            "cargo-rut",
+            "run",
+            "suite.rs",
+            "--junit",
+            "report.xml",
+            "--gtest",
+            "report.json",
+        ]);
+
+        assert_eq!(args.junit, Some(PathBuf::from("report.xml")));
+        assert_eq!(args.gtest, Some(PathBuf::from("report.json")));
+
+        let directory = run_args(&["cargo-rut", "run", "tests", "--gtest-dir", "reports"]);
+        assert_eq!(directory.gtest_dir, Some(PathBuf::from("reports")));
+    }
+
+    #[test]
+    fn rejects_conflicting_gtest_outputs() {
+        let error = Cli::try_parse_from([
+            "cargo-rut",
+            "run",
+            "--gtest",
+            "report.json",
+            "--gtest-dir",
+            "reports",
+        ])
+        .err()
+        .expect("conflicting GTest options should be rejected");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }

@@ -14,8 +14,8 @@ pub use report::{
     BoxFuture, CaseReport, SuiteReport, TestCaseInfo, TestContext, TestResult, TestStatus,
 };
 pub use reporter::{
-    JUnitReporter, MultiReporter, ReporterError, ReporterResult, StdoutReporter, TestReporter,
-    TestReporterInternal,
+    GTestReporter, JUnitReporter, MultiReporter, ReporterError, ReporterResult, StdoutReporter,
+    TestReporter, TestReporterInternal,
 };
 pub use runner::{ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunnerInternal};
 pub use rut_macros::suite;

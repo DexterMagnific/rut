@@ -56,22 +56,35 @@ path/to/suites/calculator.rs
         multiplication: 1 test
 ```
 
-    Write JUnit XML for a single selected suite:
+Write JUnit XML for a single selected suite:
 
-    ```console
-    cargo rut run path/to/suite.rs --junit target/junit/calculator.xml
-    cargo rut run --typename CalculatorSuite --junit target/junit/calculator.xml
-    ```
+```console
+cargo rut run path/to/suite.rs --junit target/junit/calculator.xml
+cargo rut run --typename CalculatorSuite --junit target/junit/calculator.xml
+```
 
-    `--junit FILE` requires exactly one selected suite and overwrites `FILE`. Live terminal output remains enabled.
+`--junit FILE` requires exactly one selected suite and overwrites `FILE`. Live terminal output remains enabled.
 
-    For one or many suites, use an output directory:
+For one or many suites, use an output directory:
 
-    ```console
-    cargo rut run path/to/suites/ --junit-dir target/junit
-    ```
+```console
+cargo rut run path/to/suites/ --junit-dir target/junit
+```
 
-    Each report has the predictable path `<junit-dir>/<source-relative-parent>/<suite-slug>.xml`. Source subdirectories are mirrored, and conflicting suite slugs in the same directory are rejected before execution.
+GoogleTest-compatible JSON supports the same file and directory modes:
+
+```console
+cargo rut run path/to/suite.rs --gtest target/gtest/calculator.json
+cargo rut run path/to/suites/ --gtest-dir target/gtest
+```
+
+JUnit and GoogleTest output can be generated in the same run:
+
+```console
+cargo rut run path/to/suites/ --junit-dir target/junit --gtest-dir target/gtest
+```
+
+Directory reports use the predictable path `<report-dir>/<source-relative-parent>/<suite-slug>.<extension>`. Source subdirectories are mirrored, existing files are overwritten, and conflicting suite slugs in the same directory are rejected before execution.
 
 Suites run with `cargo rut` do not need a `main` function. See [`rut/examples/rut_suite.rs`](rut/examples/rut_suite.rs) for a complete example.
 
@@ -175,7 +188,7 @@ suite! {
 
 Arbitrary properties (key-value pairs) can be attached to tests. Static properties are declared with the test, while dynamic properties can be set by the test code.
 
-Properties are propagated to the test report. `JUnitReporter` writes them under their owning `<testcase>` as JUnit `<property>` elements.
+Properties are propagated to the test report. `JUnitReporter` writes them under their owning `<testcase>` as JUnit `<property>` elements. `GTestReporter` flattens them onto the test object with a `prop_` prefix; if a key occurs more than once, the last value wins.
 
 ```rust
 test(
@@ -321,14 +334,15 @@ let report = ParallelRunner::default()
     .await?;
 ```
 
-`JUnitReporter` writes the completed report to a JUnit XML file. Combine it with `StdoutReporter` to keep live terminal output:
+`JUnitReporter` writes JUnit XML and `GTestReporter` writes GoogleTest-compatible JSON. Combine either or both with `StdoutReporter` to keep live terminal output:
 
 ```rust
-use rut::{JUnitReporter, MultiReporter, StdoutReporter};
+use rut::{GTestReporter, JUnitReporter, MultiReporter, StdoutReporter};
 
 let reporter = MultiReporter::new()
     .add_reporter(Box::new(StdoutReporter::new()))
-    .add_reporter(Box::new(JUnitReporter::new("target/junit/results.xml")));
+    .add_reporter(Box::new(JUnitReporter::new("target/junit/results.xml")))
+    .add_reporter(Box::new(GTestReporter::new("target/gtest/results.json")));
 
 let report = ParallelRunner::default()
     .with_suite(Box::new(CalculatorSuite::new()))
@@ -337,7 +351,9 @@ let report = ParallelRunner::default()
     .await?;
 ```
 
-`MultiReporter` forwards runner events in order and returns the first reporter's completed report. Reporter callbacks are fallible, so an XML creation or write failure is returned by `.run().await` instead of being silently ignored. `JUnitReporter` overwrites its destination, records unfinished tests as skipped, and writes each test's properties inside its own `<testcase>`.
+`MultiReporter` forwards runner events in order and returns the first reporter's completed report. Reporter callbacks are fallible, so serialization, directory creation, and write failures are returned by `.run().await` instead of being silently ignored. Both file reporters overwrite their destinations and record unfinished tests as skipped.
+
+GoogleTest JSON does not have a stable formal specification. `GTestReporter` follows GoogleTest's current JSON test-output shape. Rut does not emit source locations, parameter metadata, per-test timestamps, disabled counts, or error counts because those values are not present in `SuiteReport`.
 
 The runner returns the reporter's completed `SuiteReport`, so results remain available for assertions or further processing after output is written. It contains suite totals and a result for every case and test:
 

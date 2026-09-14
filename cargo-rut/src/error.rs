@@ -33,6 +33,6 @@ pub enum RutError {
     #[error("failed to run test suite: {0}")]
     RunError(String),
 
-    #[error("invalid JUnit output: {0}")]
-    JUnitOutput(String),
+    #[error("invalid report output: {0}")]
+    ReportOutput(String),
 }

@@ -18,6 +18,7 @@ struct ExecutionTarget {
     suite_file: PathBuf,
     typename: String,
     junit_path: Option<PathBuf>,
+    gtest_path: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -73,12 +74,13 @@ fn run_command(args: RunArgs) -> Result<i32> {
     let discovered = discover_suites(args.path.clone())?;
     let scope = args.path.as_deref().unwrap_or_else(|| Path::new("."));
     let mut targets = create_execution_targets(&discovered, args.typename.as_deref(), scope)?;
-    resolve_junit_outputs(&mut targets, &args)?;
+    resolve_report_outputs(&mut targets, &args)?;
     let succeeded = run_execution_targets(&targets, |target| {
         run_suite_file(
             &target.suite_file,
             &target.typename,
             target.junit_path.as_deref(),
+            target.gtest_path.as_deref(),
             &args,
         )
     });
@@ -97,6 +99,7 @@ fn create_execution_targets(
             suite_file: suite_file.path.clone(),
             typename: typename.to_string(),
             junit_path: None,
+            gtest_path: None,
         }]);
     }
 
@@ -106,41 +109,71 @@ fn create_execution_targets(
             suite_file: suite_file.path.clone(),
             typename: suite_file.suites[0].typename.clone(),
             junit_path: None,
+            gtest_path: None,
         })
         .collect())
 }
 
-fn resolve_junit_outputs(targets: &mut [ExecutionTarget], args: &RunArgs) -> Result<()> {
-    if let Some(path) = &args.junit {
+fn resolve_report_outputs(targets: &mut [ExecutionTarget], args: &RunArgs) -> Result<()> {
+    resolve_output_format(
+        targets,
+        args,
+        args.junit.as_deref(),
+        args.junit_dir.as_deref(),
+        "junit",
+        "xml",
+        |target| &mut target.junit_path,
+    )?;
+    resolve_output_format(
+        targets,
+        args,
+        args.gtest.as_deref(),
+        args.gtest_dir.as_deref(),
+        "gtest",
+        "json",
+        |target| &mut target.gtest_path,
+    )
+}
+
+fn resolve_output_format(
+    targets: &mut [ExecutionTarget],
+    args: &RunArgs,
+    file: Option<&Path>,
+    output_directory: Option<&Path>,
+    flag: &str,
+    extension: &str,
+    output: fn(&mut ExecutionTarget) -> &mut Option<PathBuf>,
+) -> Result<()> {
+    if let Some(path) = file {
         if targets.len() != 1 {
-            return Err(RutError::JUnitOutput(format!(
-                "--junit requires exactly one selected suite, but {} were selected; use --junit-dir for multiple suites",
-                targets.len()
+            return Err(RutError::ReportOutput(format!(
+                "--{flag} requires exactly one selected suite, but {} were selected; use --{flag}-dir for multiple suites",
+                targets.len(),
             ))
             .into());
         }
         let path = absolute_path(path)?;
         create_report_parent(&path)?;
-        targets[0].junit_path = Some(path);
-    } else if let Some(directory) = &args.junit_dir {
+        *output(&mut targets[0]) = Some(path);
+    } else if let Some(directory) = output_directory {
         let directory = absolute_path(directory)?;
         let scope_root = match args.path.as_deref() {
             Some(path) if path.is_file() => None,
             Some(path) => Some(std::fs::canonicalize(path).map_err(|error| {
-                RutError::JUnitOutput(format!(
+                RutError::ReportOutput(format!(
                     "failed to resolve report source scope {}: {error}",
                     path.display()
                 ))
             })?),
             None => Some(std::env::current_dir().map_err(|error| {
-                RutError::JUnitOutput(format!("failed to resolve current directory: {error}"))
+                RutError::ReportOutput(format!("failed to resolve current directory: {error}"))
             })?),
         };
 
         let mut destinations = HashMap::<PathBuf, Vec<String>>::new();
         for target in targets.iter_mut() {
             let source = std::fs::canonicalize(&target.suite_file).map_err(|error| {
-                RutError::JUnitOutput(format!(
+                RutError::ReportOutput(format!(
                     "failed to resolve suite source {}: {error}",
                     target.suite_file.display()
                 ))
@@ -149,9 +182,10 @@ fn resolve_junit_outputs(targets: &mut [ExecutionTarget], args: &RunArgs) -> Res
                 .as_deref()
                 .and_then(|root| source.parent()?.strip_prefix(root).ok())
                 .unwrap_or_else(|| Path::new(""));
-            let destination = directory
-                .join(relative_parent)
-                .join(format!("{}.xml", build::suite_slug(&target.typename)));
+            let destination = directory.join(relative_parent).join(format!(
+                "{}.{extension}",
+                build::suite_slug(&target.typename)
+            ));
             destinations
                 .entry(destination.clone())
                 .or_default()
@@ -160,11 +194,11 @@ fn resolve_junit_outputs(targets: &mut [ExecutionTarget], args: &RunArgs) -> Res
                     target.suite_file.display(),
                     target.typename
                 ));
-            target.junit_path = Some(destination);
+            *output(target) = Some(destination);
         }
 
         if let Some((path, suites)) = destinations.iter().find(|(_, suites)| suites.len() > 1) {
-            return Err(RutError::JUnitOutput(format!(
+            return Err(RutError::ReportOutput(format!(
                 "multiple suites map to {}:\n  {}",
                 path.display(),
                 suites.join("\n  ")
@@ -187,7 +221,7 @@ fn absolute_path(path: &Path) -> std::result::Result<PathBuf, RutError> {
         std::env::current_dir()
             .map(|current| current.join(path))
             .map_err(|error| {
-                RutError::JUnitOutput(format!("failed to resolve current directory: {error}"))
+                RutError::ReportOutput(format!("failed to resolve current directory: {error}"))
             })
     }
 }
@@ -195,7 +229,7 @@ fn absolute_path(path: &Path) -> std::result::Result<PathBuf, RutError> {
 fn create_report_parent(path: &Path) -> std::result::Result<(), RutError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
-            RutError::JUnitOutput(format!(
+            RutError::ReportOutput(format!(
                 "failed to create report directory {}: {error}",
                 parent.display()
             ))
@@ -242,6 +276,7 @@ fn run_suite_file(
     suite_file: &Path,
     typename: &str,
     junit_path: Option<&Path>,
+    gtest_path: Option<&Path>,
     args: &RunArgs,
 ) -> Result<bool> {
     eprintln!("Found suite file: {}", suite_file.display());
@@ -254,6 +289,7 @@ fn run_suite_file(
         args.jobs,
         args.shuffle,
         junit_path,
+        gtest_path,
     );
 
     let status = build::run_temp_project(suite_file, typename, wrapper)?;
@@ -299,6 +335,8 @@ mod tests {
             shuffle: false,
             junit: None,
             junit_dir: None,
+            gtest: None,
+            gtest_dir: None,
         }
     }
 
@@ -424,12 +462,13 @@ suite! {
                 suite_file: PathBuf::from(path),
                 typename: "Suite".to_string(),
                 junit_path: None,
+                gtest_path: None,
             })
             .collect::<Vec<_>>();
         let mut args = run_args(None);
         args.junit = Some(PathBuf::from("report.xml"));
 
-        let error = resolve_junit_outputs(&mut targets, &args).unwrap_err();
+        let error = resolve_report_outputs(&mut targets, &args).unwrap_err();
 
         assert!(error.to_string().contains("--junit-dir"));
     }
@@ -445,7 +484,7 @@ suite! {
         let mut args = run_args(Some(project.path().to_path_buf()));
         args.junit_dir = Some(report_dir.clone());
 
-        resolve_junit_outputs(&mut targets, &args).unwrap();
+        resolve_report_outputs(&mut targets, &args).unwrap();
 
         let destinations = targets
             .iter()
@@ -467,9 +506,58 @@ suite! {
         let mut args = run_args(Some(project.path().to_path_buf()));
         args.junit_dir = Some(project.path().join("reports"));
 
-        let error = resolve_junit_outputs(&mut targets, &args).unwrap_err();
+        let error = resolve_report_outputs(&mut targets, &args).unwrap_err();
 
         assert!(error.to_string().contains("shared-suite.xml"));
+        assert!(error.to_string().contains("first.rs"));
+        assert!(error.to_string().contains("second.rs"));
+    }
+
+    #[test]
+    fn plans_junit_and_gtest_outputs_together() {
+        let project = TempDir::new().unwrap();
+        write_suite_file(project.path(), "nested/suite.rs", &["CalculatorSuite"]);
+        let discovered = discover_suites(Some(project.path().to_path_buf())).unwrap();
+        let mut targets = create_execution_targets(&discovered, None, project.path()).unwrap();
+        let mut args = run_args(Some(project.path().to_path_buf()));
+        args.junit_dir = Some(project.path().join("junit"));
+        args.gtest_dir = Some(project.path().join("gtest"));
+
+        resolve_report_outputs(&mut targets, &args).unwrap();
+
+        assert_eq!(
+            targets[0].junit_path.as_deref(),
+            Some(
+                project
+                    .path()
+                    .join("junit/nested/calculator-suite.xml")
+                    .as_path()
+            )
+        );
+        assert_eq!(
+            targets[0].gtest_path.as_deref(),
+            Some(
+                project
+                    .path()
+                    .join("gtest/nested/calculator-suite.json")
+                    .as_path()
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_same_directory_gtest_slug_collisions() {
+        let project = TempDir::new().unwrap();
+        write_suite_file(project.path(), "first.rs", &["SharedSuite"]);
+        write_suite_file(project.path(), "second.rs", &["SharedSuite"]);
+        let discovered = discover_suites(Some(project.path().to_path_buf())).unwrap();
+        let mut targets = create_execution_targets(&discovered, None, project.path()).unwrap();
+        let mut args = run_args(Some(project.path().to_path_buf()));
+        args.gtest_dir = Some(project.path().join("reports"));
+
+        let error = resolve_report_outputs(&mut targets, &args).unwrap_err();
+
+        assert!(error.to_string().contains("shared-suite.json"));
         assert!(error.to_string().contains("first.rs"));
         assert!(error.to_string().contains("second.rs"));
     }
@@ -482,6 +570,7 @@ suite! {
                 suite_file: PathBuf::from(path),
                 typename: "Suite".to_string(),
                 junit_path: None,
+                gtest_path: None,
             })
             .collect::<Vec<_>>();
         let mut attempted = Vec::new();
@@ -513,6 +602,7 @@ suite! {
                 suite_file: PathBuf::from(path),
                 typename: "Suite".to_string(),
                 junit_path: None,
+                gtest_path: None,
             })
             .collect::<Vec<_>>();
 

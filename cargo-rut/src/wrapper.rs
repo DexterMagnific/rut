@@ -8,6 +8,7 @@ pub fn generate_wrapper(
     jobs: Option<usize>,
     shuffle: bool,
     junit_path: Option<&Path>,
+    gtest_path: Option<&Path>,
 ) -> String {
     // Convert to absolute path so include! can find it from temp directory
     let absolute_suite_path = std::fs::canonicalize(suite_file)
@@ -15,15 +16,24 @@ pub fn generate_wrapper(
         .display()
         .to_string();
 
-    let reporter_code = junit_path.map_or_else(
-        || "rut::StdoutReporter::new()".to_string(),
-        |path| {
+    let reporter_code = if junit_path.is_none() && gtest_path.is_none() {
+        "rut::StdoutReporter::new()".to_string()
+    } else {
+        let mut code = "rut::MultiReporter::new()\n                    .add_reporter(Box::new(rut::StdoutReporter::new()))".to_string();
+        if let Some(path) = junit_path {
             let path_literal = format!("{:?}", path.to_string_lossy());
-            format!(
-                "rut::MultiReporter::new()\n                    .add_reporter(Box::new(rut::StdoutReporter::new()))\n                    .add_reporter(Box::new(rut::JUnitReporter::new({path_literal})))"
-            )
-        },
-    );
+            code.push_str(&format!(
+                "\n                    .add_reporter(Box::new(rut::JUnitReporter::new({path_literal})))"
+            ));
+        }
+        if let Some(path) = gtest_path {
+            let path_literal = format!("{:?}", path.to_string_lossy());
+            code.push_str(&format!(
+                "\n                    .add_reporter(Box::new(rut::GTestReporter::new({path_literal})))"
+            ));
+        }
+        code
+    };
 
     let runner_code = match runner {
         RunnerType::Parallel => {
@@ -82,6 +92,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         assert!(wrapper.contains("ParallelRunnerBuilder::new()"));
         assert!(wrapper.contains("CalculatorSuite::new()"));
@@ -99,6 +110,7 @@ mod tests {
             Some(4),
             true,
             None,
+            None,
         );
         assert!(wrapper.contains("with_max_jobs(4)"));
         assert!(wrapper.contains("shuffle_test_cases()"));
@@ -112,6 +124,7 @@ mod tests {
             RunnerType::Sequential,
             None,
             false,
+            None,
             None,
         );
         assert!(wrapper.contains("SequentialRunner::new()"));
@@ -128,11 +141,29 @@ mod tests {
             None,
             false,
             Some(Path::new("reports/a report.xml")),
+            None,
         );
 
         assert!(wrapper.contains("MultiReporter::new()"));
         assert!(wrapper.contains("StdoutReporter::new()"));
         assert!(wrapper.contains("JUnitReporter::new(\"reports/a report.xml\")"));
         assert!(wrapper.contains("Reporting failed"));
+    }
+
+    #[test]
+    fn test_generate_wrapper_with_junit_and_gtest_reporters() {
+        let wrapper = generate_wrapper(
+            &PathBuf::from("test_suite.rs"),
+            "CalculatorSuite",
+            RunnerType::Sequential,
+            None,
+            false,
+            Some(Path::new("reports/a report.xml")),
+            Some(Path::new("reports/a report.json")),
+        );
+
+        assert!(wrapper.contains("StdoutReporter::new()"));
+        assert!(wrapper.contains("JUnitReporter::new(\"reports/a report.xml\")"));
+        assert!(wrapper.contains("GTestReporter::new(\"reports/a report.json\")"));
     }
 }
