@@ -112,11 +112,31 @@ fn assert_runner_durations(report: &rut::SuiteReport) {
     assert!(report.duration >= case.total_duration);
     assert!(report.total_duration >= Duration::from_millis(50));
     assert!(report.total_duration - report.duration >= Duration::from_millis(20));
+
+    assert!(report.started_at <= report.finished_at);
+    assert!(case.started_at.is_some());
+    assert!(case.finished_at.is_some());
+    assert!(case.started_at <= case.finished_at);
+    assert!(report.started_at <= case.started_at.unwrap());
+    assert!(case.finished_at.unwrap() <= report.finished_at);
 }
 
 fn assert_setup_failure_durations(report: &rut::SuiteReport) {
     assert_eq!(report.duration, Duration::ZERO);
     assert!(report.total_duration >= Duration::from_millis(10));
+    assert!(report.started_at <= report.finished_at);
+    assert!(
+        report
+            .test_cases
+            .iter()
+            .all(|case| case.started_at.is_none())
+    );
+    assert!(
+        report
+            .test_cases
+            .iter()
+            .all(|case| case.finished_at.is_none())
+    );
 }
 
 #[tokio::test]
@@ -124,7 +144,8 @@ async fn setup_initializes_typed_context_for_sequential_tests() {
     let report = SequentialRunner::new()
         .with_suite(Box::new(TypedContextSuite::new()))
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_eq!(report.total_passed, 1);
     assert_eq!(report.total_failed, 0);
@@ -148,7 +169,8 @@ async fn setup_context_is_shared_with_parallel_tests() {
         .with_suite(Box::new(TypedContextSuite::new()))
         .build()
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_eq!(report.total_passed, 1);
     assert_eq!(report.total_failed, 0);
@@ -159,7 +181,8 @@ async fn suite_without_context_runs_normally() {
     let report = SequentialRunner::new()
         .with_suite(Box::new(ContextFreeSuite::new()))
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_eq!(report.total_passed, 1);
     assert_eq!(report.total_failed, 0);
@@ -172,7 +195,8 @@ async fn missing_declared_context_stops_before_tests() {
     let report = SequentialRunner::new()
         .with_suite(Box::new(MissingContextSuite::new()))
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert!(!MISSING_CONTEXT_TEST_RAN.load(Ordering::SeqCst));
     assert_eq!(report.total_passed, 0);
@@ -183,7 +207,8 @@ async fn sequential_runner_measures_all_lifecycle_durations() {
     let report = SequentialRunner::new()
         .with_suite(Box::new(TimingSuite::new()))
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_runner_durations(&report);
 }
@@ -194,7 +219,8 @@ async fn parallel_runner_measures_all_lifecycle_durations() {
         .with_suite(Box::new(TimingSuite::new()))
         .build()
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_runner_durations(&report);
 }
@@ -204,7 +230,8 @@ async fn sequential_runner_records_failed_setup_total_duration() {
     let report = SequentialRunner::new()
         .with_suite(Box::new(SetupFailureTimingSuite::new()))
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_setup_failure_durations(&report);
 }
@@ -215,7 +242,8 @@ async fn parallel_runner_records_failed_setup_total_duration() {
         .with_suite(Box::new(SetupFailureTimingSuite::new()))
         .build()
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_setup_failure_durations(&report);
 }

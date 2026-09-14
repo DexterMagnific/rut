@@ -7,12 +7,23 @@ pub fn generate_wrapper(
     runner: RunnerType,
     jobs: Option<usize>,
     shuffle: bool,
+    junit_path: Option<&Path>,
 ) -> String {
     // Convert to absolute path so include! can find it from temp directory
     let absolute_suite_path = std::fs::canonicalize(suite_file)
         .unwrap_or_else(|_| suite_file.to_path_buf())
         .display()
         .to_string();
+
+    let reporter_code = junit_path.map_or_else(
+        || "rut::StdoutReporter::new()".to_string(),
+        |path| {
+            let path_literal = format!("{:?}", path.to_string_lossy());
+            format!(
+                "rut::MultiReporter::new()\n                    .add_reporter(Box::new(rut::StdoutReporter::new()))\n                    .add_reporter(Box::new(rut::JUnitReporter::new({path_literal})))"
+            )
+        },
+    );
 
     let runner_code = match runner {
         RunnerType::Parallel => {
@@ -23,16 +34,16 @@ pub fn generate_wrapper(
             format!(
                 r#"rut::ParallelRunnerBuilder::new(){}{}
                     .with_suite(Box::new({}::new()))
-                    .with_reporter(Box::new(rut::StdoutReporter::new()))
+                    .with_reporter(Box::new({}))
                     .build()"#,
-                jobs_code, shuffle_code, typename
+                jobs_code, shuffle_code, typename, reporter_code
             )
         }
         RunnerType::Sequential => format!(
             r#"rut::SequentialRunner::new()
                 .with_suite(Box::new({}::new()))
-                .with_reporter(Box::new(rut::StdoutReporter::new()))"#,
-            typename
+                .with_reporter(Box::new({}))"#,
+            typename, reporter_code
         ),
     };
 
@@ -41,10 +52,17 @@ pub fn generate_wrapper(
 
 #[tokio::main]
 async fn main() {{
-    let report = {}
+    let exit_code = match {}
         .run()
-        .await;
-    std::process::exit(if report.total_failed > 0 {{ 1 }} else {{ 0 }});
+        .await
+    {{
+        Ok(report) => if report.total_failed > 0 {{ 1 }} else {{ 0 }},
+        Err(error) => {{
+            eprintln!("Reporting failed: {{error}}");
+            2
+        }}
+    }};
+    std::process::exit(exit_code);
 }}"#,
         absolute_suite_path, runner_code
     )
@@ -63,6 +81,7 @@ mod tests {
             RunnerType::Parallel,
             None,
             false,
+            None,
         );
         assert!(wrapper.contains("ParallelRunnerBuilder::new()"));
         assert!(wrapper.contains("CalculatorSuite::new()"));
@@ -79,6 +98,7 @@ mod tests {
             RunnerType::Parallel,
             Some(4),
             true,
+            None,
         );
         assert!(wrapper.contains("with_max_jobs(4)"));
         assert!(wrapper.contains("shuffle_test_cases()"));
@@ -92,9 +112,27 @@ mod tests {
             RunnerType::Sequential,
             None,
             false,
+            None,
         );
         assert!(wrapper.contains("SequentialRunner::new()"));
         assert!(wrapper.contains("CalculatorSuite::new()"));
         assert!(!wrapper.contains("ParallelRunnerBuilder"));
+    }
+
+    #[test]
+    fn test_generate_wrapper_with_junit_reporter() {
+        let wrapper = generate_wrapper(
+            &PathBuf::from("test_suite.rs"),
+            "CalculatorSuite",
+            RunnerType::Sequential,
+            None,
+            false,
+            Some(Path::new("reports/a report.xml")),
+        );
+
+        assert!(wrapper.contains("MultiReporter::new()"));
+        assert!(wrapper.contains("StdoutReporter::new()"));
+        assert!(wrapper.contains("JUnitReporter::new(\"reports/a report.xml\")"));
+        assert!(wrapper.contains("Reporting failed"));
     }
 }

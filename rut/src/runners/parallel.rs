@@ -1,4 +1,5 @@
 use crate::report::{BoxFuture, SuiteReport};
+use crate::reporter::ReporterResult;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use std::collections::VecDeque;
@@ -108,7 +109,7 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
         self
     }
 
-    fn run(self) -> BoxFuture<'static, SuiteReport> {
+    fn run(self) -> BoxFuture<'static, ReporterResult<SuiteReport>> {
         Box::pin(async move {
             let suite = self.suite.expect("suite required");
             let mut reporter = self
@@ -125,7 +126,10 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
                 })
                 .collect::<Vec<_>>();
 
-            reporter.report_start(&suite_name, &test_case_infos).await;
+            let suite_started_at = chrono::Utc::now();
+            reporter
+                .report_start(&suite_name, &test_case_infos, suite_started_at)
+                .await?;
 
             // Run setup with panic catching
             let suite_total_start = Instant::now();
@@ -140,9 +144,13 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
                 Ok(suite) => suite,
                 Err(_) => {
                     reporter
-                        .report_finish(Duration::ZERO, suite_total_start.elapsed())
-                        .await;
-                    return reporter.get_report().clone();
+                        .report_finish(
+                            Duration::ZERO,
+                            suite_total_start.elapsed(),
+                            chrono::Utc::now(),
+                        )
+                        .await?;
+                    return Ok(reporter.get_report().clone());
                 }
             };
 
@@ -186,12 +194,18 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
                 match res {
                     Ok(Ok(payload)) => {
                         reporter
-                            .report_case_start(&payload.name, payload.test_names.len())
-                            .await;
+                            .report_case_start(
+                                &payload.name,
+                                payload.test_names.len(),
+                                payload.started_at,
+                            )
+                            .await?;
 
                         for (test_name, result) in payload.results {
-                            reporter.report_test_start(&payload.name, &test_name).await;
-                            reporter.report_result(&payload.name, &result).await;
+                            reporter
+                                .report_test_start(&payload.name, &test_name)
+                                .await?;
+                            reporter.report_result(&payload.name, &result).await?;
 
                             if result.status == crate::report::TestStatus::Failed {
                                 break;
@@ -203,33 +217,46 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
                                 &payload.name,
                                 payload.duration,
                                 payload.total_duration,
+                                payload.finished_at,
                             )
-                            .await;
+                            .await?;
                     }
                     Ok(Err(error_msg)) => {
-                        reporter.report_case_start("unknown", 0).await;
+                        let started_at = chrono::Utc::now();
+                        reporter.report_case_start("unknown", 0, started_at).await?;
                         reporter
                             .report_result(
                                 "unknown",
                                 &TestResult::failed(format!("test case panicked: {}", error_msg)),
                             )
-                            .await;
+                            .await?;
                         reporter
-                            .report_case_finish("unknown", Duration::ZERO, Duration::ZERO)
-                            .await;
+                            .report_case_finish(
+                                "unknown",
+                                Duration::ZERO,
+                                Duration::ZERO,
+                                chrono::Utc::now(),
+                            )
+                            .await?;
                     }
                     Err(join_error) => {
                         let join_error: tokio::task::JoinError = join_error;
-                        reporter.report_case_start("unknown", 0).await;
+                        let started_at = chrono::Utc::now();
+                        reporter.report_case_start("unknown", 0, started_at).await?;
                         reporter
                             .report_result(
                                 "unknown",
                                 &TestResult::failed(format!("test case panicked: {}", join_error)),
                             )
-                            .await;
+                            .await?;
                         reporter
-                            .report_case_finish("unknown", Duration::ZERO, Duration::ZERO)
-                            .await;
+                            .report_case_finish(
+                                "unknown",
+                                Duration::ZERO,
+                                Duration::ZERO,
+                                chrono::Utc::now(),
+                            )
+                            .await?;
                     }
                 }
             }
@@ -244,9 +271,9 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
 
             let suite_total_duration = suite_total_start.elapsed();
             reporter
-                .report_finish(suite_duration, suite_total_duration)
-                .await;
-            reporter.get_report().clone()
+                .report_finish(suite_duration, suite_total_duration, chrono::Utc::now())
+                .await?;
+            Ok(reporter.get_report().clone())
         })
     }
 }
@@ -261,6 +288,7 @@ async fn run_test_case(
     mut case: Box<dyn crate::case::TestCaseInternal>,
     ctx: Option<crate::report::TestContext>,
 ) -> Result<crate::runner::CaseResult, String> {
+    let started_at = chrono::Utc::now();
     let case_total_start = Instant::now();
     case.setup_case(ctx.as_ref()).await;
     let case_duration_start = Instant::now();
@@ -272,6 +300,9 @@ async fn run_test_case(
         let mut result = test.run(ctx.as_ref()).await;
         let duration = test_start.elapsed();
 
+        if result.name.is_empty() {
+            result.name = test.name().to_string();
+        }
         result.duration = duration;
         result.total_duration = duration;
 
@@ -284,11 +315,14 @@ async fn run_test_case(
 
     let duration = case_duration_start.elapsed();
     case.teardown_case(ctx.as_ref()).await;
+    let finished_at = chrono::Utc::now();
 
     Ok(crate::runner::CaseResult {
         name: case_name,
         test_names,
         results,
+        started_at,
+        finished_at,
         duration,
         total_duration: case_total_start.elapsed(),
     })

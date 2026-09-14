@@ -1,4 +1,6 @@
 use crate::report::{BoxFuture, SuiteReport};
+use crate::reporter::ReporterResult;
+use chrono::Utc;
 use std::time::{Duration, Instant};
 
 pub struct SequentialRunner {
@@ -32,7 +34,7 @@ impl crate::runner::TestRunnerInternal for SequentialRunner {
         self
     }
 
-    fn run(self) -> BoxFuture<'static, SuiteReport> {
+    fn run(self) -> BoxFuture<'static, ReporterResult<SuiteReport>> {
         Box::pin(async move {
             let suite = self.suite.expect("suite required");
             let mut reporter = self
@@ -49,7 +51,10 @@ impl crate::runner::TestRunnerInternal for SequentialRunner {
                 })
                 .collect::<Vec<_>>();
 
-            reporter.report_start(&suite_name, &test_case_infos).await;
+            let suite_started_at = Utc::now();
+            reporter
+                .report_start(&suite_name, &test_case_infos, suite_started_at)
+                .await?;
 
             // Run setup with panic catching
             let suite_total_start = Instant::now();
@@ -64,9 +69,9 @@ impl crate::runner::TestRunnerInternal for SequentialRunner {
                 Ok(suite) => suite,
                 Err(_) => {
                     reporter
-                        .report_finish(Duration::ZERO, suite_total_start.elapsed())
-                        .await;
-                    return reporter.get_report().clone();
+                        .report_finish(Duration::ZERO, suite_total_start.elapsed(), Utc::now())
+                        .await?;
+                    return Ok(reporter.get_report().clone());
                 }
             };
 
@@ -75,25 +80,29 @@ impl crate::runner::TestRunnerInternal for SequentialRunner {
 
             for case in test_cases {
                 let mut case = case.clone_box();
+                let case_started_at = Utc::now();
                 reporter
-                    .report_case_start(case.name(), case.tests().len())
-                    .await;
+                    .report_case_start(case.name(), case.tests().len(), case_started_at)
+                    .await?;
 
                 let case_total_start = Instant::now();
                 case.setup_case(ctx).await;
                 let case_duration_start = Instant::now();
 
                 for test in case.tests() {
-                    reporter.report_test_start(case.name(), test.name()).await;
+                    reporter.report_test_start(case.name(), test.name()).await?;
 
                     let test_start = Instant::now();
                     let mut result = test.run(ctx).await;
                     let duration = test_start.elapsed();
 
+                    if result.name.is_empty() {
+                        result.name = test.name().to_string();
+                    }
                     result.duration = duration;
                     result.total_duration = duration;
 
-                    reporter.report_result(case.name(), &result).await;
+                    reporter.report_result(case.name(), &result).await?;
 
                     if result.status == crate::report::TestStatus::Failed {
                         break;
@@ -104,8 +113,8 @@ impl crate::runner::TestRunnerInternal for SequentialRunner {
                 case.teardown_case(ctx).await;
                 let case_total_duration = case_total_start.elapsed();
                 reporter
-                    .report_case_finish(case.name(), case_duration, case_total_duration)
-                    .await;
+                    .report_case_finish(case.name(), case_duration, case_total_duration, Utc::now())
+                    .await?;
             }
 
             // Run teardown with panic catching
@@ -118,9 +127,9 @@ impl crate::runner::TestRunnerInternal for SequentialRunner {
 
             let suite_total_duration = suite_total_start.elapsed();
             reporter
-                .report_finish(suite_duration, suite_total_duration)
-                .await;
-            reporter.get_report().clone()
+                .report_finish(suite_duration, suite_total_duration, Utc::now())
+                .await?;
+            Ok(reporter.get_report().clone())
         })
     }
 }

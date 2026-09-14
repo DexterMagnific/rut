@@ -1,5 +1,7 @@
 use crate::case::TestCaseInternal;
 use crate::report::{BoxFuture, SuiteReport, TestResult};
+use crate::reporter::ReporterResult;
+use chrono::{DateTime, Utc};
 use std::time::Duration;
 
 pub type CaseData = (String, Vec<String>, Box<dyn TestCaseInternal>);
@@ -8,6 +10,8 @@ pub struct CaseResult {
     pub name: String,
     pub test_names: Vec<String>,
     pub results: Vec<(String, TestResult)>,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
     pub duration: Duration,
     pub total_duration: Duration,
 }
@@ -19,7 +23,7 @@ pub trait TestRunnerInternal: Send + Sync {
     fn with_reporter(self, reporter: Box<dyn crate::reporter::TestReporterInternal>) -> Self
     where
         Self: Sized;
-    fn run(self) -> BoxFuture<'static, SuiteReport>;
+    fn run(self) -> BoxFuture<'static, ReporterResult<SuiteReport>>;
 }
 
 // Re-export runners from the crate-level runners module

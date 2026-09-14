@@ -1,6 +1,6 @@
-use async_trait::async_trait;
 use crate::case::{TestCase, TestCaseInternal};
-use crate::report::{TestContext, BoxFuture};
+use crate::report::{BoxFuture, TestContext};
+use async_trait::async_trait;
 
 pub trait TestSuiteInternal: Send + Sync {
     fn setup_suite<'a>(&'a mut self) -> BoxFuture<'a, ()>;
@@ -61,10 +61,13 @@ impl<T: TestSuite + Clone + Sized + 'static> TestSuiteInternal for T {
     }
 
     fn test_cases(&self) -> Vec<Box<dyn TestCaseInternal>> {
-        TestSuite::test_cases(self).into_iter()
+        TestSuite::test_cases(self)
+            .into_iter()
             .map(|c| {
                 let boxed: Box<dyn TestCase> = c;
-                unsafe { std::mem::transmute::<Box<dyn TestCase>, Box<dyn TestCaseInternal>>(boxed) }
+                unsafe {
+                    std::mem::transmute::<Box<dyn TestCase>, Box<dyn TestCaseInternal>>(boxed)
+                }
             })
             .collect()
     }
@@ -79,8 +82,6 @@ impl<T: TestSuite + Clone + Sized + 'static> TestSuiteInternal for T {
         Box::new(self.clone()) as Box<dyn TestSuiteInternal>
     }
 }
-
-
 
 pub struct TestSuiteBuilder<S: TestSuiteInternal> {
     suite: S,

@@ -54,7 +54,8 @@ async fn main() {
         .with_reporter(Box::new(StdoutReporter::new()))
         .build()
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_eq!(report.total_passed, 2);
     assert_eq!(report.total_failed, 0);

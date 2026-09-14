@@ -23,6 +23,8 @@ chrono = { version = "*", features = ["serde"] }
 num_cpus = "*"
 rand = "*"
 rut-macros = { path = "../rut-macros" }
+thiserror = "1"
+quick-xml = "0.38"
 
 [lib]
 name = "rut"
@@ -30,3 +32,4 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 trybuild = "*"
+tempfile = "3"

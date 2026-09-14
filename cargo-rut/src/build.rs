@@ -112,7 +112,7 @@ fn project_hash(suite_file: &Path, owner_id: &str) -> String {
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
-fn suite_slug(typename: &str) -> String {
+pub(crate) fn suite_slug(typename: &str) -> String {
     let characters = typename.chars().collect::<Vec<_>>();
     let mut slug = String::new();
 

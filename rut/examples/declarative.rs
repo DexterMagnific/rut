@@ -72,7 +72,8 @@ async fn main() {
         .with_suite(Box::new(DslSuite::new()))
         .with_reporter(Box::new(StdoutReporter::new()))
         .run()
-        .await;
+        .await
+        .expect("reporting failed");
 
     assert_eq!(report.total_passed, 2);
     assert_eq!(report.total_failed, 0);

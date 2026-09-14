@@ -108,7 +108,7 @@ pub struct TestCaseInfo {
 }
 
 impl SuiteReport {
-    pub fn new(suite_name: &str, test_cases: &[TestCaseInfo]) -> Self {
+    pub fn new(suite_name: &str, test_cases: &[TestCaseInfo], started_at: DateTime<Utc>) -> Self {
         let test_cases_vec: Vec<CaseReport> = test_cases
             .iter()
             .map(|c| {
@@ -139,7 +139,6 @@ impl SuiteReport {
             })
             .collect();
 
-        let now = Utc::now();
         Self {
             suite_name: suite_name.to_string(),
             test_cases: test_cases_vec,
@@ -147,8 +146,8 @@ impl SuiteReport {
             total_failed: 0,
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
-            started_at: now,
-            finished_at: now,
+            started_at,
+            finished_at: started_at,
         }
     }
 }

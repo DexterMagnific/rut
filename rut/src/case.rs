@@ -1,6 +1,6 @@
-use async_trait::async_trait;
+use crate::report::{BoxFuture, TestContext};
 use crate::test::{Test, TestInternal};
-use crate::report::{TestContext, BoxFuture};
+use async_trait::async_trait;
 
 pub trait TestCaseInternal: Send + Sync + std::panic::UnwindSafe {
     fn name(&self) -> &str;
@@ -52,7 +52,8 @@ impl<T: TestCase + ?Sized> TestCaseInternal for T {
     }
 
     fn tests(&self) -> Vec<Box<dyn TestInternal>> {
-        TestCase::tests(self).into_iter()
+        TestCase::tests(self)
+            .into_iter()
             .map(|t| {
                 let boxed: Box<dyn Test> = t;
                 unsafe { std::mem::transmute::<Box<dyn Test>, Box<dyn TestInternal>>(boxed) }

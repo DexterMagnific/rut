@@ -1,5 +1,6 @@
 use crate::report::{BoxFuture, SuiteReport, TestCaseInfo, TestResult, TestStatus};
-use crate::reporter::TestReporterInternal;
+use crate::reporter::{ReporterResult, TestReporterInternal};
+use chrono::{DateTime, Utc};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -9,7 +10,15 @@ pub struct StdoutReporter {
 
 impl StdoutReporter {
     pub fn new() -> Self {
-        Self::default()
+        Self { report: None }
+    }
+
+    fn report(&self) -> &SuiteReport {
+        self.report.as_ref().expect("report_start not called")
+    }
+
+    fn report_mut(&mut self) -> &mut SuiteReport {
+        self.report.as_mut().expect("report_start not called")
     }
 }
 
@@ -18,10 +27,11 @@ impl TestReporterInternal for StdoutReporter {
         &'a mut self,
         suite_name: &'a str,
         test_cases: &'a [TestCaseInfo],
-    ) -> BoxFuture<'a, ()> {
+        started_at: DateTime<Utc>,
+    ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
             let total_tests: usize = test_cases.iter().map(|c| c.test_names.len()).sum();
-            self.report = Some(SuiteReport::new(suite_name, test_cases));
+            self.report = Some(SuiteReport::new(suite_name, test_cases, started_at));
 
             println!(
                 "Running test suite: {} ({} test cases, {} tests)",
@@ -29,6 +39,7 @@ impl TestReporterInternal for StdoutReporter {
                 test_cases.len(),
                 total_tests
             );
+            Ok(())
         })
     }
 
@@ -36,15 +47,20 @@ impl TestReporterInternal for StdoutReporter {
         &'a mut self,
         case_name: &'a str,
         test_count: usize,
-    ) -> BoxFuture<'a, ()> {
+        started_at: DateTime<Utc>,
+    ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
-            if let Some(report) = &mut self.report {
-                if let Some(case) = report.test_cases.iter_mut().find(|c| c.name == case_name) {
-                    case.status = TestStatus::Running;
-                    case.started_at = Some(chrono::Utc::now());
-                }
+            if let Some(case) = self
+                .report_mut()
+                .test_cases
+                .iter_mut()
+                .find(|case| case.name == case_name)
+            {
+                case.status = TestStatus::Running;
+                case.started_at = Some(started_at);
             }
             println!("  Test case: {} ({} tests)", case_name, test_count);
+            Ok(())
         })
     }
 
@@ -52,16 +68,19 @@ impl TestReporterInternal for StdoutReporter {
         &'a mut self,
         case_name: &'a str,
         test_name: &'a str,
-    ) -> BoxFuture<'a, ()> {
+    ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
-            if let Some(report) = &mut self.report {
-                if let Some(case) = report.test_cases.iter_mut().find(|c| c.name == case_name) {
-                    if let Some(test) = case.tests.iter_mut().find(|t| t.name == test_name) {
-                        test.status = TestStatus::Running;
-                    }
-                }
+            if let Some(test) = self
+                .report_mut()
+                .test_cases
+                .iter_mut()
+                .find(|case| case.name == case_name)
+                .and_then(|case| case.tests.iter_mut().find(|test| test.name == test_name))
+            {
+                test.status = TestStatus::Running;
             }
             println!("    Running: {}", test_name);
+            Ok(())
         })
     }
 
@@ -69,29 +88,31 @@ impl TestReporterInternal for StdoutReporter {
         &'a mut self,
         case_name: &'a str,
         result: &'a TestResult,
-    ) -> BoxFuture<'a, ()> {
+    ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
-            if let Some(report) = &mut self.report {
-                if let Some(case) = report.test_cases.iter_mut().find(|c| c.name == case_name) {
-                    if let Some(test) = case.tests.iter_mut().find(|t| t.name == result.name) {
-                        test.status = result.status;
-                        test.message = result.message.clone();
-                        test.duration = result.duration;
-                        test.total_duration = result.total_duration;
-                        test.properties = result.properties.clone();
+            let report = self.report_mut();
+            if let Some(case) = report
+                .test_cases
+                .iter_mut()
+                .find(|case| case.name == case_name)
+                && let Some(test) = case.tests.iter_mut().find(|test| test.name == result.name)
+            {
+                test.status = result.status;
+                test.message = result.message.clone();
+                test.duration = result.duration;
+                test.total_duration = result.total_duration;
+                test.properties = result.properties.clone();
 
-                        match result.status {
-                            TestStatus::Passed => {
-                                case.passed += 1;
-                                report.total_passed += 1;
-                            }
-                            TestStatus::Failed => {
-                                case.failed += 1;
-                                report.total_failed += 1;
-                            }
-                            _ => {}
-                        }
+                match result.status {
+                    TestStatus::Passed => {
+                        case.passed += 1;
+                        report.total_passed += 1;
                     }
+                    TestStatus::Failed => {
+                        case.failed += 1;
+                        report.total_failed += 1;
+                    }
+                    TestStatus::NotYetRun | TestStatus::Running => {}
                 }
             }
 
@@ -118,6 +139,7 @@ impl TestReporterInternal for StdoutReporter {
             for (key, value) in &result.properties {
                 println!("      Property: {} = {}", key, value);
             }
+            Ok(())
         })
     }
 
@@ -126,24 +148,29 @@ impl TestReporterInternal for StdoutReporter {
         case_name: &'a str,
         duration: Duration,
         total_duration: Duration,
-    ) -> BoxFuture<'a, ()> {
+        finished_at: DateTime<Utc>,
+    ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
-            if let Some(report) = &mut self.report {
-                if let Some(case) = report.test_cases.iter_mut().find(|c| c.name == case_name) {
-                    case.status = if case.failed > 0 {
-                        TestStatus::Failed
-                    } else {
-                        TestStatus::Passed
-                    };
-                    case.finished_at = Some(chrono::Utc::now());
-                    case.duration = duration;
-                    case.total_duration = total_duration;
-                }
+            if let Some(case) = self
+                .report_mut()
+                .test_cases
+                .iter_mut()
+                .find(|case| case.name == case_name)
+            {
+                case.status = if case.failed > 0 {
+                    TestStatus::Failed
+                } else {
+                    TestStatus::Passed
+                };
+                case.finished_at = Some(finished_at);
+                case.duration = duration;
+                case.total_duration = total_duration;
             }
             println!(
                 "  Finished: {} (duration: {:.2?}, total duration: {:.2?})",
                 case_name, duration, total_duration
             );
+            Ok(())
         })
     }
 
@@ -151,25 +178,96 @@ impl TestReporterInternal for StdoutReporter {
         &'a mut self,
         duration: Duration,
         total_duration: Duration,
-    ) -> BoxFuture<'a, ()> {
+        finished_at: DateTime<Utc>,
+    ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
-            if let Some(report) = &mut self.report {
-                report.finished_at = chrono::Utc::now();
-                report.duration = duration;
-                report.total_duration = total_duration;
-
-                println!(
-                    "\nTest run completed: {} passed, {} failed (duration: {:.2?}, total duration: {:.2?})",
-                    report.total_passed,
-                    report.total_failed,
-                    report.duration,
-                    report.total_duration
-                );
-            }
+            let report = self.report_mut();
+            report.finished_at = finished_at;
+            report.duration = duration;
+            report.total_duration = total_duration;
+            println!(
+                "\nTest run completed: {} passed, {} failed (duration: {:.2?}, total duration: {:.2?})",
+                report.total_passed, report.total_failed, report.duration, report.total_duration
+            );
+            Ok(())
         })
     }
 
     fn get_report(&self) -> &SuiteReport {
-        self.report.as_ref().expect("report_start not called")
+        self.report()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn independently_builds_a_report_from_runner_events() {
+        let started_at = DateTime::parse_from_rfc3339("2026-09-08T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let case_started_at = DateTime::parse_from_rfc3339("2026-09-08T10:00:01Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let case_finished_at = DateTime::parse_from_rfc3339("2026-09-08T10:00:02Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let finished_at = DateTime::parse_from_rfc3339("2026-09-08T10:00:03Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut reporter = StdoutReporter::new();
+
+        reporter
+            .report_start(
+                "suite",
+                &[TestCaseInfo {
+                    name: "case".to_string(),
+                    test_names: vec!["test".to_string()],
+                }],
+                started_at,
+            )
+            .await
+            .unwrap();
+        reporter
+            .report_case_start("case", 1, case_started_at)
+            .await
+            .unwrap();
+        reporter.report_test_start("case", "test").await.unwrap();
+
+        let mut result = TestResult::passed().with_property("kind", "unit");
+        result.name = "test".to_string();
+        result.duration = Duration::from_millis(2);
+        result.total_duration = Duration::from_millis(2);
+        reporter.report_result("case", &result).await.unwrap();
+        reporter
+            .report_case_finish(
+                "case",
+                Duration::from_millis(3),
+                Duration::from_millis(4),
+                case_finished_at,
+            )
+            .await
+            .unwrap();
+        reporter
+            .report_finish(
+                Duration::from_millis(5),
+                Duration::from_millis(6),
+                finished_at,
+            )
+            .await
+            .unwrap();
+
+        let report = reporter.get_report();
+        assert_eq!(report.total_passed, 1);
+        assert_eq!(report.started_at, started_at);
+        assert_eq!(report.finished_at, finished_at);
+        assert_eq!(report.test_cases[0].started_at, Some(case_started_at));
+        assert_eq!(report.test_cases[0].finished_at, Some(case_finished_at));
+        assert_eq!(
+            report.test_cases[0].tests[0].properties,
+            vec![("kind".to_string(), "unit".to_string())]
+        );
+        assert_eq!(report.total_duration, Duration::from_millis(6));
     }
 }

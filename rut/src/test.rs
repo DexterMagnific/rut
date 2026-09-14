@@ -1,5 +1,5 @@
+use crate::report::{BoxFuture, TestContext, TestResult};
 use async_trait::async_trait;
-use crate::report::{TestResult, TestContext, BoxFuture};
 
 pub trait TestInternal: Send + Sync {
     fn name(&self) -> &str;

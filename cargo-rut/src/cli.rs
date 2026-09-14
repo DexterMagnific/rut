@@ -45,6 +45,14 @@ pub struct RunArgs {
     /// Shuffle test case order (parallel runner only)
     #[arg(long)]
     pub shuffle: bool,
+
+    /// Write JUnit XML for a single selected suite
+    #[arg(long, value_name = "FILE", conflicts_with = "junit_dir")]
+    pub junit: Option<PathBuf>,
+
+    /// Write one predictable JUnit XML file per selected suite
+    #[arg(long, value_name = "DIR", conflicts_with = "junit")]
+    pub junit_dir: Option<PathBuf>,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -74,6 +82,8 @@ mod tests {
         assert!(matches!(args.runner, RunnerType::Parallel));
         assert_eq!(args.jobs, None);
         assert!(!args.shuffle);
+        assert_eq!(args.junit, None);
+        assert_eq!(args.junit_dir, None);
     }
 
     #[test]
@@ -104,6 +114,38 @@ mod tests {
         assert!(matches!(args.runner, RunnerType::Sequential));
         assert_eq!(args.jobs, Some(2));
         assert!(args.shuffle);
+    }
+
+    #[test]
+    fn parses_junit_file_and_directory_outputs() {
+        let file = run_args(&[
+            "cargo-rut",
+            "run",
+            "suite.rs",
+            "--junit",
+            "reports/suite.xml",
+        ]);
+        assert_eq!(file.junit, Some(PathBuf::from("reports/suite.xml")));
+
+        let directory = run_args(&["cargo-rut", "run", "tests", "--junit-dir", "reports"]);
+        assert_eq!(directory.junit_dir, Some(PathBuf::from("reports")));
+    }
+
+    #[test]
+    fn rejects_conflicting_junit_outputs() {
+        let error = match Cli::try_parse_from([
+            "cargo-rut",
+            "run",
+            "--junit",
+            "report.xml",
+            "--junit-dir",
+            "reports",
+        ]) {
+            Ok(_) => panic!("conflicting JUnit options should be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
