@@ -4,7 +4,7 @@
 
 ## Getting Started
 
-Until `rut` is published on crates.io, add it from GitHub together with Tokio:
+* Add `rut` to the list of your dependencies to write tests
 
 ```toml
 [dev-dependencies]
@@ -12,7 +12,7 @@ rut = { git = "https://github.com/DexterMagnific/rut" }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
 ```
 
-Install the Cargo subcommand:
+* Install the Cargo subcommand to run tests
 
 ```console
 cargo install --git https://github.com/DexterMagnific/rut cargo-rut
@@ -20,77 +20,74 @@ cargo install --git https://github.com/DexterMagnific/rut cargo-rut
 
 ## Cargo rut
 
-Run every suite in the current project:
+Use `cargo rut` to run test suites
+
+* All suites from the current dir
 
 ```console
 cargo rut run
 ```
 
-Run suites from a file or directory:
+* Suites from a specific file or directory
 
 ```console
 cargo rut run path/to/suite.rs
 cargo rut run path/to/suites/
 ```
 
-Run a specific suite by its Rust typename:
+* Run a specific suite by its typename
 
 ```console
 cargo rut run --typename CalculatorSuite
 cargo rut run path/to/suites/ --typename CalculatorSuite
 ```
 
-The optional path narrows the typename search. If the same typename exists in more than one discovered file, provide a file or narrower directory to select one.
-
-List every discovered suite with its file, display name, typename, cases, and test counts:
+* List suites
 
 ```console
 cargo rut list
 cargo rut list path/to/suites/
 ```
 
-```text
-path/to/suites/calculator.rs
-    Calculator (CalculatorSuite): 2 cases
-        addition: 1 test
-        multiplication: 1 test
-```
+* Save JUnit report
 
-Write JUnit XML for a single selected suite:
+Single suite: `--junit`
 
 ```console
 cargo rut run path/to/suite.rs --junit target/junit/calculator.xml
 cargo rut run --typename CalculatorSuite --junit target/junit/calculator.xml
 ```
 
-`--junit FILE` requires exactly one selected suite and overwrites `FILE`. Live terminal output remains enabled.
-
-For one or many suites, use an output directory:
+Multiple suites: `--junit-dir`
 
 ```console
 cargo rut run path/to/suites/ --junit-dir target/junit
 ```
 
-GoogleTest-compatible JSON supports the same file and directory modes:
+* Save Google Test JSON report
 
 ```console
 cargo rut run path/to/suite.rs --gtest target/gtest/calculator.json
+cargo rut run --typename CalculatorSuite --gtest target/gtest/calculator.json
+```
+
+Multiple suites: `--gtest-dir`
+
+```console
 cargo rut run path/to/suites/ --gtest-dir target/gtest
 ```
 
-JUnit and GoogleTest output can be generated in the same run:
+* JUnit+GTest:
 
 ```console
 cargo rut run path/to/suites/ --junit-dir target/junit --gtest-dir target/gtest
 ```
 
-Directory reports use the predictable path `<report-dir>/<source-relative-parent>/<suite-slug>.<extension>`. Source subdirectories are mirrored, existing files are overwritten, and conflicting suite slugs in the same directory are rejected before execution.
-
-Suites run with `cargo rut` do not need a `main` function. See [`rut/examples/rut_suite.rs`](rut/examples/rut_suite.rs) for a complete example.
+Directory reports mirror the source path.
 
 ## Suites, Cases and Tests
 
-A suite contains related test cases, and each case contains one or more tests. 
+A suite contains related test cases, and each case contains one or more tests.
 
 The code below declares a test suite with two test cases.
 
@@ -144,30 +141,17 @@ suite! {
 }
 ```
 
-Returning `TestResult::failed` stops the remaining tests in that case. Other cases can still run.
-
-`TestResult::failed` records the source location where it is called. It uses Rust's
-`#[track_caller]`, so helper functions that should preserve their caller's location must also be
-annotated with `#[track_caller]`:
-
-```rust
-#[track_caller]
-fn failure(message: impl Into<String>) -> TestResult {
-    TestResult::failed(message)
-}
-```
-
-Panics inside test bodies are converted into failed test results. Their failure location is the
-panic origin, and their message contains the panic payload followed by a force-captured stack
-backtrace. A panic therefore appears to reporters like a detailed failure string instead of
-aborting the suite. Panics in suite or case setup and teardown are not yet modeled as test
-failures.
+* Suites run with `cargo rut` do not need a `main` function.
+* Returning `TestResult::failed` stops the remaining tests in that case. Other cases can still run.
+* Panics inside test bodies are converted into failed test results with captured location and backtrace.
 
 ## Setup and Teardown
 
 Setup and teardown are supported at both suite and case level.
 
 ```rust
+use rut::{TestResult, suite};
+
 suite! {
     typename = CalculatorSuite;
     name = "Calculator";
@@ -205,8 +189,6 @@ suite! {
 
 Arbitrary properties (key-value pairs) can be attached to tests. Static properties are declared with the test, while dynamic properties can be set by the test code.
 
-Properties are propagated to the test report. `JUnitReporter` writes them under their owning `<testcase>` as JUnit `<property>` elements. `GTestReporter` flattens them onto the test object with a `prop_` prefix; if a key occurs more than once, the last value wins.
-
 ```rust
 test(
     // name is reserved for the test name
@@ -226,11 +208,14 @@ test(
 }
 ```
 
+Properties are propagated to the test reporter which may or may not include them in the final output.
+
 ## Custom Context
 
 Optional suite-wide context can be provided when tests need shared state.
 
 ```rust
+use rut::{TestResult, suite};
 use std::sync::{Arc, Mutex};
 
 // A sample context struct
@@ -282,11 +267,11 @@ suite! {
 
 ## Sequential or Parallel?
 
-`rut` separates test definitions from their execution strategy. A **runner** takes a suite, executes its lifecycle and tests, sends progress to a reporter, and returns the completed report. Because the suite DSL is independent of the runner, the same suite can run with different execution strategies without changing any tests.
+`rut` separates test definitions from their execution strategy. A **runner** takes a suite, executes its lifecycle and tests, sends progress to a reporter, and returns the completed report.
 
 The framework includes two built-in runners: `SequentialRunner` executes one case at a time, while `ParallelRunner` executes independent cases concurrently. Both consume the same generated suite and return the same report type.
 
-Use the sequential runner for predictable, single-threaded case ordering:
+Use the sequential runner for predictable, one-case-at-a-time ordering:
 
 ```console
 cargo rut run path/to/suite.rs --runner sequential
@@ -316,10 +301,10 @@ Shuffling changes dispatch order only. Tests within each case still run sequenti
 
 ## Manual Run
 
-For custom suite execution and report post-processing, add your own `main` function after the `suite!` declaration.
+For custom suite execution and report post-processing, add your own `main` function after the `suite!` declaration. Note: you cannot use `cargo rut` in that case, so you have to manually invoke your test executable.
 
 ```rust
-use rut::{ParallelRunnerBuilder, ReporterResult, StdoutReporter, TestRunnerInternal};
+use rut::{ParallelRunnerBuilder, ReporterResult, StdoutReporter, TestRunner};
 
 #[tokio::main]
 async fn main() -> ReporterResult<()> {
@@ -341,18 +326,11 @@ async fn main() -> ReporterResult<()> {
 
 Reporting is modular too. A **reporter** receives events as the runner starts and finishes suites, cases, and tests. It decides how progress is presented and builds the final `SuiteReport`.
 
-Each test result has two distinct locations:
-
-- `source` identifies the `test(...)` declaration.
-- `failure_location` identifies the `TestResult::failed(...)` call or panic origin.
-
-Macro-generated tests obtain their declaration path from the compiler's `file!()` value. Paths
-are stored without runtime canonicalization, and line and byte-column numbers are one-based.
-Hand-written `Test` implementations can override `source_location`; the default returns `None`.
-
 `StdoutReporter` is the built-in terminal reporter. It prints live progress, pass/fail results, durations, failure messages, and properties:
 
 ```rust
+use rut::{ParallelRunner, StdoutReporter, TestRunner};
+
 let report = ParallelRunner::default()
     .with_suite(Box::new(CalculatorSuite::new()))
     .with_reporter(Box::new(StdoutReporter::new()))
@@ -360,10 +338,13 @@ let report = ParallelRunner::default()
     .await?;
 ```
 
-`JUnitReporter` writes JUnit XML and `GTestReporter` writes GoogleTest-compatible JSON. Combine either or both with `StdoutReporter` to keep live terminal output:
+The built-in `MultiReporter` forwards runner events in order and returns the first reporter's completed report.
 
 ```rust
-use rut::{GTestReporter, JUnitReporter, MultiReporter, StdoutReporter};
+use rut::{
+    GTestReporter, JUnitReporter, MultiReporter, ParallelRunner, StdoutReporter,
+    TestRunner,
+};
 
 let reporter = MultiReporter::new()
     .add_reporter(Box::new(StdoutReporter::new()))
@@ -377,50 +358,7 @@ let report = ParallelRunner::default()
     .await?;
 ```
 
-`MultiReporter` forwards runner events in order and returns the first reporter's completed report. Reporter callbacks are fallible, so serialization, directory creation, and write failures are returned by `.run().await` instead of being silently ignored. Both file reporters overwrite their destinations and record unfinished tests as skipped.
-
-`ReporterResult<T>` uses a type-erased `anyhow::Error`, so a custom reporter is not limited to
-framework-defined error variants. Standard errors work with `?`, and any custom error implementing
-`std::error::Error + Send + Sync + 'static` can be returned with `.into()`:
-
-```rust
-#[derive(Debug)]
-struct UploadError;
-
-impl std::fmt::Display for UploadError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("report upload failed")
-    }
-}
-
-impl std::error::Error for UploadError {}
-
-async fn upload_report() -> Result<(), UploadError> {
-    // Upload the completed report.
-    Ok(())
-}
-
-async fn finish_custom_reporter() -> ReporterResult<()> {
-    upload_report().await?;
-    Ok(())
-}
-```
-
-Applications with a direct `anyhow` dependency can use `anyhow::Context` to add operation or path
-details while preserving the original error for chain inspection and downcasting. Code migrating
-from `ReporterError` should return its native errors with context instead of constructing or
-matching format-specific variants.
-
-`StdoutReporter` displays declaration and failure locations. `GTestReporter` writes declaration
-`file` and `line` fields plus a rut `column` extension. `JUnitReporter` writes `file`, `line`, and
-`column` attributes on `<testcase>` as common xUnit extensions. Both file reporters prefix failure
-text with its failure location and preserve panic backtraces in the failure body.
-
-GoogleTest JSON does not have a stable formal specification. `GTestReporter` follows GoogleTest's current JSON test-output shape. Rut does not emit parameter metadata, per-test timestamps, disabled counts, or error counts because those values are not present in `SuiteReport`.
-
-The runner returns the reporter's completed `SuiteReport`, so results remain available for assertions or further processing after output is written. It contains suite totals and a result for every case and test:
-
-Every suite, case, and test result has two timing fields. `duration` excludes that item's own setup and teardown, while `total_duration` includes them. A suite's `duration` therefore includes complete case lifecycles, and a case's `duration` includes its complete test executions. Tests currently have equal values for both fields because they do not have test-level setup or teardown. Parallel suite timings are elapsed wall-clock durations, not sums of concurrently running cases.
+The resulting `SuiteReport` can be explored for post processing:
 
 ```rust
 println!("Suite: {}", report.suite_name);

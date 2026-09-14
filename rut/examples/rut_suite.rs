@@ -1,4 +1,4 @@
-use rut::{TestResult, TestRunnerInternal, suite};
+use rut::{TestResult, suite};
 
 suite! {
     typename = CalculatorSuite;

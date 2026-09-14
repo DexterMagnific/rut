@@ -1,6 +1,7 @@
-use crate::report::{BoxFuture, SuiteReport, TestCaseInfo, TestResult, TestStatus};
-use crate::reporter::{ReporterResult, TestReporterInternal};
+use crate::report::{SuiteReport, TestCaseInfo, TestResult, TestStatus};
+use crate::reporter::{ReporterResult, TestReporter};
 use anyhow::Context;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
@@ -44,65 +45,59 @@ impl JUnitReporter {
     }
 }
 
-impl TestReporterInternal for JUnitReporter {
-    fn report_start<'a>(
-        &'a mut self,
-        suite_name: &'a str,
-        test_cases: &'a [TestCaseInfo],
+#[async_trait]
+impl TestReporter for JUnitReporter {
+    async fn report_start(
+        &mut self,
+        suite_name: &str,
+        test_cases: &[TestCaseInfo],
         started_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            self.report = Some(SuiteReport::new(suite_name, test_cases, started_at));
-            Ok(())
-        })
+    ) -> ReporterResult<()> {
+        self.report = Some(SuiteReport::new(suite_name, test_cases, started_at));
+        Ok(())
     }
 
-    fn report_case_start<'a>(
-        &'a mut self,
-        case_name: &'a str,
+    async fn report_case_start(
+        &mut self,
+        case_name: &str,
         _test_count: usize,
         started_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            if let Some(case) = self
-                .report_mut()
-                .test_cases
-                .iter_mut()
-                .find(|case| case.name == case_name)
-            {
-                case.status = TestStatus::Running;
-                case.started_at = Some(started_at);
-            }
-            Ok(())
-        })
+    ) -> ReporterResult<()> {
+        if let Some(case) = self
+            .report_mut()
+            .test_cases
+            .iter_mut()
+            .find(|case| case.name == case_name)
+        {
+            case.status = TestStatus::Running;
+            case.started_at = Some(started_at);
+        }
+        Ok(())
     }
 
-    fn report_test_start<'a>(
-        &'a mut self,
-        case_name: &'a str,
-        test_name: &'a str,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            if let Some(test) = self
-                .report_mut()
-                .test_cases
-                .iter_mut()
-                .find(|case| case.name == case_name)
-                .and_then(|case| case.tests.iter_mut().find(|test| test.name == test_name))
-            {
-                test.status = TestStatus::Running;
-            }
-            Ok(())
-        })
+    async fn report_test_start(
+        &mut self,
+        case_name: &str,
+        test_name: &str,
+    ) -> ReporterResult<()> {
+        if let Some(test) = self
+            .report_mut()
+            .test_cases
+            .iter_mut()
+            .find(|case| case.name == case_name)
+            .and_then(|case| case.tests.iter_mut().find(|test| test.name == test_name))
+        {
+            test.status = TestStatus::Running;
+        }
+        Ok(())
     }
 
-    fn report_result<'a>(
-        &'a mut self,
-        case_name: &'a str,
-        result: &'a TestResult,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            let report = self.report_mut();
+    async fn report_result(
+        &mut self,
+        case_name: &str,
+        result: &TestResult,
+    ) -> ReporterResult<()> {
+        let report = self.report_mut();
             if let Some(case) = report
                 .test_cases
                 .iter_mut()
@@ -129,50 +124,45 @@ impl TestReporterInternal for JUnitReporter {
                     TestStatus::NotYetRun | TestStatus::Running => {}
                 }
             }
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn report_case_finish<'a>(
-        &'a mut self,
-        case_name: &'a str,
+    async fn report_case_finish(
+        &mut self,
+        case_name: &str,
         duration: Duration,
         total_duration: Duration,
         finished_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            if let Some(case) = self
-                .report_mut()
-                .test_cases
-                .iter_mut()
-                .find(|case| case.name == case_name)
-            {
-                case.status = if case.failed > 0 {
-                    TestStatus::Failed
-                } else {
-                    TestStatus::Passed
-                };
-                case.finished_at = Some(finished_at);
-                case.duration = duration;
-                case.total_duration = total_duration;
-            }
-            Ok(())
-        })
+    ) -> ReporterResult<()> {
+        if let Some(case) = self
+            .report_mut()
+            .test_cases
+            .iter_mut()
+            .find(|case| case.name == case_name)
+        {
+            case.status = if case.failed > 0 {
+                TestStatus::Failed
+            } else {
+                TestStatus::Passed
+            };
+            case.finished_at = Some(finished_at);
+            case.duration = duration;
+            case.total_duration = total_duration;
+        }
+        Ok(())
     }
 
-    fn report_finish<'a>(
-        &'a mut self,
+    async fn report_finish(
+        &mut self,
         duration: Duration,
         total_duration: Duration,
         finished_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            let report = self.report_mut();
-            report.finished_at = finished_at;
-            report.duration = duration;
-            report.total_duration = total_duration;
-            self.write_report()
-        })
+    ) -> ReporterResult<()> {
+        let report = self.report_mut();
+        report.finished_at = finished_at;
+        report.duration = duration;
+        report.total_duration = total_duration;
+        self.write_report()
     }
 
     fn get_report(&self) -> &SuiteReport {

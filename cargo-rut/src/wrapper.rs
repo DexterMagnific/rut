@@ -60,6 +60,8 @@ pub fn generate_wrapper(
     format!(
         r#"include!(r"{}");
 
+use rut::TestRunner as _;
+
 #[tokio::main]
 async fn main() {{
     let exit_code = match {}
@@ -95,6 +97,8 @@ mod tests {
             None,
         );
         assert!(wrapper.contains("ParallelRunnerBuilder::new()"));
+        assert!(wrapper.contains("use rut::TestRunner as _;"));
+        assert!(!wrapper.contains("TestRunnerInternal"));
         assert!(wrapper.contains("CalculatorSuite::new()"));
         assert!(wrapper.contains("StdoutReporter::new()"));
         assert!(!wrapper.contains("with_max_jobs"));

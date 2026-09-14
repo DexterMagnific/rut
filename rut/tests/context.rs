@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use rut::{ParallelRunnerBuilder, SequentialRunner, TestResult, TestRunnerInternal, suite};
+use rut::{ParallelRunnerBuilder, SequentialRunner, TestResult, TestRunner, suite};
 
 struct Context {
     ready: bool,

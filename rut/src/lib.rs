@@ -20,7 +20,7 @@ pub use reporter::{
     GTestReporter, JUnitReporter, MultiReporter, ReporterResult, StdoutReporter, TestReporter,
     TestReporterInternal,
 };
-pub use runner::{ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunnerInternal};
+pub use runner::{ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunner};
 pub use rut_macros::suite;
 pub use suite::{TestSuite, TestSuiteBuilder, TestSuiteInternal};
 pub use test::{Test, TestInternal};

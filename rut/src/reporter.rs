@@ -151,7 +151,7 @@ impl<T: TestReporter + ?Sized> TestReporterInternal for T {
 
 // MultiReporter - forwards calls to multiple sub-reporters
 pub struct MultiReporter {
-    reporters: Vec<Box<dyn TestReporterInternal>>,
+    reporters: Vec<Box<dyn TestReporter>>,
 }
 
 impl MultiReporter {
@@ -161,12 +161,12 @@ impl MultiReporter {
         }
     }
 
-    pub fn add_reporter(mut self, reporter: Box<dyn TestReporterInternal>) -> Self {
+    pub fn add_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self {
         self.reporters.push(reporter);
         self
     }
 
-    pub fn with_reporters(mut self, reporters: Vec<Box<dyn TestReporterInternal>>) -> Self {
+    pub fn with_reporters(mut self, reporters: Vec<Box<dyn TestReporter>>) -> Self {
         self.reporters = reporters;
         self
     }
@@ -178,96 +178,85 @@ impl Default for MultiReporter {
     }
 }
 
-impl TestReporterInternal for MultiReporter {
-    fn report_start<'a>(
-        &'a mut self,
-        suite_name: &'a str,
-        test_cases: &'a [TestCaseInfo],
+#[async_trait]
+impl TestReporter for MultiReporter {
+    async fn report_start(
+        &mut self,
+        suite_name: &str,
+        test_cases: &[TestCaseInfo],
         started_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            for reporter in &mut self.reporters {
-                reporter
-                    .report_start(suite_name, test_cases, started_at)
-                    .await?;
-            }
-            Ok(())
-        })
+    ) -> ReporterResult<()> {
+        for reporter in &mut self.reporters {
+            reporter
+                .report_start(suite_name, test_cases, started_at)
+                .await?;
+        }
+        Ok(())
     }
 
-    fn report_case_start<'a>(
-        &'a mut self,
-        case_name: &'a str,
+    async fn report_case_start(
+        &mut self,
+        case_name: &str,
         test_count: usize,
         started_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            for reporter in &mut self.reporters {
-                reporter
-                    .report_case_start(case_name, test_count, started_at)
-                    .await?;
-            }
-            Ok(())
-        })
+    ) -> ReporterResult<()> {
+        for reporter in &mut self.reporters {
+            reporter
+                .report_case_start(case_name, test_count, started_at)
+                .await?;
+        }
+        Ok(())
     }
 
-    fn report_test_start<'a>(
-        &'a mut self,
-        case_name: &'a str,
-        test_name: &'a str,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            for reporter in &mut self.reporters {
-                reporter.report_test_start(case_name, test_name).await?;
-            }
-            Ok(())
-        })
+    async fn report_test_start(
+        &mut self,
+        case_name: &str,
+        test_name: &str,
+    ) -> ReporterResult<()> {
+        for reporter in &mut self.reporters {
+            reporter.report_test_start(case_name, test_name).await?;
+        }
+        Ok(())
     }
 
-    fn report_result<'a>(
-        &'a mut self,
-        case_name: &'a str,
-        result: &'a TestResult,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            for reporter in &mut self.reporters {
-                reporter.report_result(case_name, result).await?;
-            }
-            Ok(())
-        })
+    async fn report_result(
+        &mut self,
+        case_name: &str,
+        result: &TestResult,
+    ) -> ReporterResult<()> {
+        for reporter in &mut self.reporters {
+            reporter.report_result(case_name, result).await?;
+        }
+        Ok(())
     }
 
-    fn report_case_finish<'a>(
-        &'a mut self,
-        case_name: &'a str,
+    async fn report_case_finish(
+        &mut self,
+        case_name: &str,
         duration: Duration,
         total_duration: Duration,
         finished_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            for reporter in &mut self.reporters {
-                reporter
-                    .report_case_finish(case_name, duration, total_duration, finished_at)
-                    .await?;
-            }
-            Ok(())
-        })
+    ) -> ReporterResult<()> {
+        for reporter in &mut self.reporters {
+            reporter
+                .report_case_finish(case_name, duration, total_duration, finished_at)
+                .await?;
+        }
+        Ok(())
     }
 
-    fn report_finish<'a>(
-        &'a mut self,
+    async fn report_finish(
+        &mut self,
         duration: Duration,
         total_duration: Duration,
         finished_at: DateTime<Utc>,
-    ) -> BoxFuture<'a, ReporterResult<()>> {
-        Box::pin(async move {
-            for reporter in &mut self.reporters {
-                reporter
-                    .report_finish(duration, total_duration, finished_at)
-                    .await?;
-            }
-            Ok(())
-        })
+    ) -> ReporterResult<()> {
+        for reporter in &mut self.reporters {
+            reporter
+                .report_finish(duration, total_duration, finished_at)
+                .await?;
+        }
+        Ok(())
     }
 
     fn get_report(&self) -> &SuiteReport {
@@ -376,12 +365,15 @@ mod tests {
 
         let started_at = Utc::now();
         let finished_at = started_at + chrono::TimeDelta::seconds(1);
-        reporter
-            .report_start("suite", &[], started_at)
+        TestReporter::report_start(&mut reporter, "suite", &[], started_at)
             .await
             .unwrap();
-        let error = reporter
-            .report_finish(Duration::ZERO, Duration::ZERO, finished_at)
+        let error = TestReporter::report_finish(
+            &mut reporter,
+            Duration::ZERO,
+            Duration::ZERO,
+            finished_at,
+        )
             .await
             .unwrap_err();
 
@@ -391,9 +383,9 @@ mod tests {
                 .contains("failed to create report directory")
         );
         assert!(error.downcast_ref::<std::io::Error>().is_some());
-        assert_eq!(reporter.get_report().suite_name, "suite");
-        assert_eq!(reporter.get_report().started_at, started_at);
-        assert_eq!(reporter.get_report().finished_at, finished_at);
+        assert_eq!(TestReporter::get_report(&reporter).suite_name, "suite");
+        assert_eq!(TestReporter::get_report(&reporter).started_at, started_at);
+        assert_eq!(TestReporter::get_report(&reporter).finished_at, finished_at);
     }
 
     #[tokio::test]
@@ -409,12 +401,15 @@ mod tests {
 
         let started_at = Utc::now();
         let finished_at = started_at + chrono::TimeDelta::seconds(1);
-        reporter
-            .report_start("suite", &[], started_at)
+        TestReporter::report_start(&mut reporter, "suite", &[], started_at)
             .await
             .unwrap();
-        let error = reporter
-            .report_finish(Duration::ZERO, Duration::ZERO, finished_at)
+        let error = TestReporter::report_finish(
+            &mut reporter,
+            Duration::ZERO,
+            Duration::ZERO,
+            finished_at,
+        )
             .await
             .unwrap_err();
 
@@ -424,8 +419,8 @@ mod tests {
                 .contains("failed to create report directory")
         );
         assert!(error.downcast_ref::<std::io::Error>().is_some());
-        assert_eq!(reporter.get_report().suite_name, "suite");
-        assert_eq!(reporter.get_report().finished_at, finished_at);
+        assert_eq!(TestReporter::get_report(&reporter).suite_name, "suite");
+        assert_eq!(TestReporter::get_report(&reporter).finished_at, finished_at);
     }
 
     #[tokio::test]
@@ -434,18 +429,21 @@ mod tests {
             .add_reporter(Box::new(StdoutReporter::new()))
             .add_reporter(Box::new(FailingCustomReporter { report: None }));
         let started_at = Utc::now();
-        reporter
-            .report_start("suite", &[], started_at)
+        TestReporter::report_start(&mut reporter, "suite", &[], started_at)
             .await
             .unwrap();
 
-        let error = reporter
-            .report_finish(Duration::ZERO, Duration::ZERO, started_at)
+        let error = TestReporter::report_finish(
+            &mut reporter,
+            Duration::ZERO,
+            Duration::ZERO,
+            started_at,
+        )
             .await
             .unwrap_err();
 
         assert!(error.downcast_ref::<CustomReporterError>().is_some());
         assert_eq!(error.to_string(), "custom reporter failed");
-        assert_eq!(reporter.get_report().suite_name, "suite");
+        assert_eq!(TestReporter::get_report(&reporter).suite_name, "suite");
     }
 }

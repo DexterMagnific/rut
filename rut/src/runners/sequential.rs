@@ -1,11 +1,13 @@
-use crate::report::{BoxFuture, SuiteReport};
-use crate::reporter::ReporterResult;
+use crate::report::SuiteReport;
+use crate::reporter::{ReporterResult, TestReporter};
+use crate::suite::TestSuite;
+use async_trait::async_trait;
 use chrono::Utc;
 use std::time::{Duration, Instant};
 
 pub struct SequentialRunner {
-    suite: Option<Box<dyn crate::suite::TestSuiteInternal>>,
-    reporter: Option<Box<dyn crate::reporter::TestReporterInternal>>,
+    suite: Option<Box<dyn TestSuite>>,
+    reporter: Option<Box<dyn TestReporter>>,
 }
 
 impl SequentialRunner {
@@ -23,19 +25,19 @@ impl Default for SequentialRunner {
     }
 }
 
-impl crate::runner::TestRunnerInternal for SequentialRunner {
-    fn with_suite(mut self, suite: Box<dyn crate::suite::TestSuiteInternal>) -> Self {
+#[async_trait]
+impl crate::runner::TestRunner for SequentialRunner {
+    fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self {
         self.suite = Some(suite);
         self
     }
 
-    fn with_reporter(mut self, reporter: Box<dyn crate::reporter::TestReporterInternal>) -> Self {
+    fn with_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self {
         self.reporter = Some(reporter);
         self
     }
 
-    fn run(self) -> BoxFuture<'static, ReporterResult<SuiteReport>> {
-        Box::pin(async move {
+    async fn run(self) -> ReporterResult<SuiteReport> {
             let suite = self.suite.expect("suite required");
             let mut reporter = self
                 .reporter
@@ -141,6 +143,5 @@ impl crate::runner::TestRunnerInternal for SequentialRunner {
                 .report_finish(suite_duration, suite_total_duration, Utc::now())
                 .await?;
             Ok(reporter.get_report().clone())
-        })
     }
 }

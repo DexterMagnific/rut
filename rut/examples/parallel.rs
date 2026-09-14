@@ -2,7 +2,7 @@ mod support;
 
 use std::time::Duration;
 
-use rut::{ParallelRunnerBuilder, StdoutReporter, TestRunnerInternal};
+use rut::{ParallelRunnerBuilder, StdoutReporter, TestRunner};
 use support::{ExampleCase, ExampleContext, ExampleSuite, ExampleTest};
 
 fn slow_case_setup_ran(context: &ExampleContext) -> Result<(), String> {

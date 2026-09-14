@@ -1,29 +1,19 @@
-use crate::case::TestCaseInternal;
-use crate::report::{BoxFuture, SuiteReport, TestResult};
-use crate::reporter::ReporterResult;
-use chrono::{DateTime, Utc};
-use std::time::Duration;
+use crate::report::SuiteReport;
+use crate::reporter::{ReporterResult, TestReporter};
+use crate::suite::TestSuite;
+use async_trait::async_trait;
 
-pub type CaseData = (String, Vec<String>, Box<dyn TestCaseInternal>);
-
-pub struct CaseResult {
-    pub name: String,
-    pub test_names: Vec<String>,
-    pub results: Vec<(String, TestResult)>,
-    pub started_at: DateTime<Utc>,
-    pub finished_at: DateTime<Utc>,
-    pub duration: Duration,
-    pub total_duration: Duration,
-}
-
-pub trait TestRunnerInternal: Send + Sync {
-    fn with_suite(self, suite: Box<dyn crate::suite::TestSuiteInternal>) -> Self
+#[async_trait]
+pub trait TestRunner: Send + Sync {
+    fn with_suite(self, suite: Box<dyn TestSuite>) -> Self
     where
         Self: Sized;
-    fn with_reporter(self, reporter: Box<dyn crate::reporter::TestReporterInternal>) -> Self
+    fn with_reporter(self, reporter: Box<dyn TestReporter>) -> Self
     where
         Self: Sized;
-    fn run(self) -> BoxFuture<'static, ReporterResult<SuiteReport>>;
+    async fn run(self) -> ReporterResult<SuiteReport>
+    where
+        Self: Sized;
 }
 
 // Re-export runners from the crate-level runners module

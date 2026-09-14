@@ -1,5 +1,8 @@
-use crate::report::{BoxFuture, SuiteReport};
-use crate::reporter::ReporterResult;
+use crate::case::TestCase;
+use crate::report::SuiteReport;
+use crate::reporter::{ReporterResult, TestReporter};
+use crate::suite::TestSuite;
+use async_trait::async_trait;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use std::collections::VecDeque;
@@ -7,13 +10,24 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 
 use crate::report::TestResult;
-use crate::suite::TestSuiteInternal;
+
+type CaseData = (String, usize, Box<dyn TestCase>);
+
+struct CompletedCase {
+    name: String,
+    test_count: usize,
+    results: Vec<TestResult>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    finished_at: chrono::DateTime<chrono::Utc>,
+    duration: Duration,
+    total_duration: Duration,
+}
 
 pub struct ParallelRunner {
     max_jobs: usize,
     shuffle_test_cases: bool,
-    suite: Option<Box<dyn TestSuiteInternal>>,
-    reporter: Option<Box<dyn crate::reporter::TestReporterInternal>>,
+    suite: Option<Box<dyn TestSuite>>,
+    reporter: Option<Box<dyn TestReporter>>,
 }
 
 impl ParallelRunner {
@@ -45,8 +59,8 @@ impl Default for ParallelRunner {
 pub struct ParallelRunnerBuilder {
     max_jobs: usize,
     shuffle_test_cases: bool,
-    suite: Option<Box<dyn TestSuiteInternal>>,
-    reporter: Option<Box<dyn crate::reporter::TestReporterInternal>>,
+    suite: Option<Box<dyn TestSuite>>,
+    reporter: Option<Box<dyn TestReporter>>,
 }
 
 impl ParallelRunnerBuilder {
@@ -69,14 +83,14 @@ impl ParallelRunnerBuilder {
         self
     }
 
-    pub fn with_suite(mut self, suite: Box<dyn crate::suite::TestSuiteInternal>) -> Self {
+    pub fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self {
         self.suite = Some(suite);
         self
     }
 
     pub fn with_reporter(
         mut self,
-        reporter: Box<dyn crate::reporter::TestReporterInternal>,
+        reporter: Box<dyn TestReporter>,
     ) -> Self {
         self.reporter = Some(reporter);
         self
@@ -98,19 +112,19 @@ impl Default for ParallelRunnerBuilder {
     }
 }
 
-impl crate::runner::TestRunnerInternal for ParallelRunner {
-    fn with_suite(mut self, suite: Box<dyn TestSuiteInternal>) -> Self {
+#[async_trait]
+impl crate::runner::TestRunner for ParallelRunner {
+    fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self {
         self.suite = Some(suite);
         self
     }
 
-    fn with_reporter(mut self, reporter: Box<dyn crate::reporter::TestReporterInternal>) -> Self {
+    fn with_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self {
         self.reporter = Some(reporter);
         self
     }
 
-    fn run(self) -> BoxFuture<'static, ReporterResult<SuiteReport>> {
-        Box::pin(async move {
+    async fn run(self) -> ReporterResult<SuiteReport> {
             let suite = self.suite.expect("suite required");
             let mut reporter = self
                 .reporter
@@ -164,15 +178,11 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
             let ctx = suite.context().cloned();
             let suite_duration_start = Instant::now();
 
-            let mut queued: VecDeque<crate::runner::CaseData> = test_cases
+            let mut queued: VecDeque<CaseData> = test_cases
                 .into_iter()
                 .map(|case| {
-                    let test_names = case
-                        .tests()
-                        .iter()
-                        .map(|test| test.name().to_string())
-                        .collect();
-                    (case.name().to_string(), test_names, case)
+                    let test_count = case.tests().len();
+                    (case.name().to_string(), test_count, case)
                 })
                 .collect();
 
@@ -185,17 +195,17 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
 
             // Start initial batch
             for _ in 0..max_jobs.min(queued.len()) {
-                let (case_name, test_names, case) =
+                let (case_name, test_count, case) =
                     queued.pop_front().expect("queued case should exist");
                 let ctx = ctx.clone();
-                running.spawn(run_test_case(case_name, test_names, case, ctx));
+                running.spawn(run_test_case(case_name, test_count, case, ctx));
             }
 
             // Process completions, start next in queue order
             while let Some(res) = running.join_next().await {
-                if let Some((case_name, test_names, case)) = queued.pop_front() {
+                if let Some((case_name, test_count, case)) = queued.pop_front() {
                     let ctx = ctx.clone();
-                    running.spawn(run_test_case(case_name, test_names, case, ctx));
+                    running.spawn(run_test_case(case_name, test_count, case, ctx));
                 }
 
                 match res {
@@ -203,14 +213,14 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
                         reporter
                             .report_case_start(
                                 &payload.name,
-                                payload.test_names.len(),
+                                payload.test_count,
                                 payload.started_at,
                             )
                             .await?;
 
-                        for (test_name, result) in payload.results {
+                        for result in payload.results {
                             reporter
-                                .report_test_start(&payload.name, &test_name)
+                                .report_test_start(&payload.name, &result.name)
                                 .await?;
                             reporter.report_result(&payload.name, &result).await?;
 
@@ -281,7 +291,6 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
                 .report_finish(suite_duration, suite_total_duration, chrono::Utc::now())
                 .await?;
             Ok(reporter.get_report().clone())
-        })
     }
 }
 
@@ -291,10 +300,10 @@ fn shuffle_queue<T, R: Rng + ?Sized>(queue: &mut [T], rng: &mut R) {
 
 async fn run_test_case(
     case_name: String,
-    test_names: Vec<String>,
-    mut case: Box<dyn crate::case::TestCaseInternal>,
+    test_count: usize,
+    mut case: Box<dyn TestCase>,
     ctx: Option<crate::report::TestContext>,
-) -> Result<crate::runner::CaseResult, String> {
+) -> Result<CompletedCase, String> {
     let started_at = chrono::Utc::now();
     let case_total_start = Instant::now();
     case.setup_case(ctx.as_ref()).await;
@@ -317,9 +326,9 @@ async fn run_test_case(
         result.duration = duration;
         result.total_duration = duration;
 
-        results.push((test.name().to_string(), result));
+        results.push(result);
 
-        if results.last().unwrap().1.status == crate::report::TestStatus::Failed {
+        if results.last().unwrap().status == crate::report::TestStatus::Failed {
             break;
         }
     }
@@ -328,9 +337,9 @@ async fn run_test_case(
     case.teardown_case(ctx.as_ref()).await;
     let finished_at = chrono::Utc::now();
 
-    Ok(crate::runner::CaseResult {
+    Ok(CompletedCase {
         name: case_name,
-        test_names,
+        test_count,
         results,
         started_at,
         finished_at,

@@ -1,6 +1,6 @@
 mod support;
 
-use rut::{SequentialRunner, StdoutReporter, TestRunnerInternal};
+use rut::{SequentialRunner, StdoutReporter, TestRunner};
 use support::{ExampleCase, ExampleContext, ExampleSuite, ExampleTest};
 
 fn suite_setup_ran(context: &ExampleContext) -> Result<(), String> {

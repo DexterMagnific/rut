@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use rut::{SequentialRunner, StdoutReporter, TestResult, TestRunnerInternal, suite};
+use rut::{SequentialRunner, StdoutReporter, TestResult, TestRunner, suite};
 
 #[derive(Clone, Default)]
 struct AppContext {
