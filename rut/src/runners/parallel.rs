@@ -122,7 +122,14 @@ impl crate::runner::TestRunnerInternal for ParallelRunner {
                 .iter()
                 .map(|c| crate::report::TestCaseInfo {
                     name: c.name().to_string(),
-                    test_names: c.tests().iter().map(|t| t.name().to_string()).collect(),
+                    tests: c
+                        .tests()
+                        .iter()
+                        .map(|test| crate::report::TestInfo {
+                            name: test.name().to_string(),
+                            source: test.source_location(),
+                        })
+                        .collect(),
                 })
                 .collect::<Vec<_>>();
 
@@ -297,12 +304,16 @@ async fn run_test_case(
 
     for test in case.tests() {
         let test_start = Instant::now();
-        let mut result = test.run(ctx.as_ref()).await;
+        let mut result = match crate::panic_capture::catch_test_panic(test.run(ctx.as_ref())).await
+        {
+            Ok(result) | Err(result) => result,
+        };
         let duration = test_start.elapsed();
 
         if result.name.is_empty() {
             result.name = test.name().to_string();
         }
+        result.source = test.source_location();
         result.duration = duration;
         result.total_duration = duration;
 

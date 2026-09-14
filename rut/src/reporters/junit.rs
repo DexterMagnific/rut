@@ -113,6 +113,8 @@ impl TestReporterInternal for JUnitReporter {
             {
                 test.status = result.status;
                 test.message = result.message.clone();
+                test.source = result.source.clone();
+                test.failure_location = result.failure_location.clone();
                 test.duration = result.duration;
                 test.total_duration = result.total_duration;
                 test.properties = result.properties.clone();
@@ -225,10 +227,21 @@ fn serialize_report(report: &SuiteReport) -> ReporterResult<Vec<u8>> {
     for case in &report.test_cases {
         for test in &case.tests {
             let test_time = seconds(test.total_duration);
+            let source_line = test.source.as_ref().map(|source| source.line.to_string());
+            let source_column = test.source.as_ref().map(|source| source.column.to_string());
             let mut testcase = BytesStart::new("testcase");
             testcase.push_attribute(("name", test.name.as_str()));
             testcase.push_attribute(("classname", case.name.as_str()));
             testcase.push_attribute(("time", test_time.as_str()));
+            if let Some(source) = &test.source {
+                testcase.push_attribute(("file", source.file.as_str()));
+            }
+            if let Some(line) = &source_line {
+                testcase.push_attribute(("line", line.as_str()));
+            }
+            if let Some(column) = &source_column {
+                testcase.push_attribute(("column", column.as_str()));
+            }
             write_event(&mut writer, Event::Start(testcase))?;
 
             if !test.properties.is_empty() {
@@ -244,11 +257,11 @@ fn serialize_report(report: &SuiteReport) -> ReporterResult<Vec<u8>> {
 
             match test.status {
                 TestStatus::Failed => {
-                    let message = test.message.as_deref().unwrap_or("test failed");
+                    let message = failure_message(test);
                     let mut failure = BytesStart::new("failure");
-                    failure.push_attribute(("message", message));
+                    failure.push_attribute(("message", message.as_str()));
                     write_event(&mut writer, Event::Start(failure))?;
-                    write_event(&mut writer, Event::Text(BytesText::new(message)))?;
+                    write_event(&mut writer, Event::Text(BytesText::new(&message)))?;
                     write_event(&mut writer, Event::End(BytesEnd::new("failure")))?;
                 }
                 TestStatus::NotYetRun | TestStatus::Running => {
@@ -266,6 +279,19 @@ fn serialize_report(report: &SuiteReport) -> ReporterResult<Vec<u8>> {
     Ok(writer.into_inner())
 }
 
+fn failure_message(test: &TestResult) -> String {
+    let message = test.message.as_deref().unwrap_or("test failed");
+    test.failure_location.as_ref().map_or_else(
+        || message.to_string(),
+        |location| {
+            format!(
+                "{}:{}:{}: {message}",
+                location.file, location.line, location.column
+            )
+        },
+    )
+}
+
 fn write_event(writer: &mut Writer<Vec<u8>>, event: Event<'_>) -> ReporterResult<()> {
     writer
         .write_event(event)
@@ -279,6 +305,7 @@ fn seconds(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::{SourceLocation, TestInfo};
     use quick_xml::Reader;
     use quick_xml::events::Event;
     use tempfile::TempDir;
@@ -305,10 +332,19 @@ mod tests {
                 "A & B",
                 &[TestCaseInfo {
                     name: "case <one>".to_string(),
-                    test_names: vec![
-                        "passes".to_string(),
-                        "fails".to_string(),
-                        "later".to_string(),
+                    tests: vec![
+                        TestInfo {
+                            name: "passes".to_string(),
+                            source: Some(SourceLocation::new("tests/example.rs", 10, 9)),
+                        },
+                        TestInfo {
+                            name: "fails".to_string(),
+                            source: Some(SourceLocation::new("tests/example.rs", 20, 9)),
+                        },
+                        TestInfo {
+                            name: "later".to_string(),
+                            source: None,
+                        },
                     ],
                 }],
                 suite_started_at,
@@ -325,6 +361,7 @@ mod tests {
             .unwrap();
         let mut passed = TestResult::passed().with_property("key & one", "value <one>");
         passed.name = "passes".to_string();
+        passed.source = Some(SourceLocation::new("tests/example.rs", 10, 9));
         reporter.report_result("case <one>", &passed).await.unwrap();
         reporter
             .report_test_start("case <one>", "fails")
@@ -332,6 +369,8 @@ mod tests {
             .unwrap();
         let mut failed = TestResult::failed("expected <x> & got y");
         failed.name = "fails".to_string();
+        failed.source = Some(SourceLocation::new("tests/example.rs", 20, 9));
+        failed.failure_location = Some(SourceLocation::new("tests/example.rs", 24, 13));
         reporter.report_result("case <one>", &failed).await.unwrap();
         reporter
             .report_case_finish(
@@ -370,7 +409,9 @@ mod tests {
         assert!(starts.contains(&"skipped".to_string()));
         assert!(xml.contains("<properties>"));
         assert!(xml.contains("name=\"key &amp; one\" value=\"value &lt;one&gt;\""));
-        assert!(xml.contains("expected &lt;x&gt; &amp; got y"));
+        assert!(xml.contains("file=\"tests/example.rs\" line=\"10\" column=\"9\""));
+        assert!(xml.contains("file=\"tests/example.rs\" line=\"20\" column=\"9\""));
+        assert!(xml.contains("tests/example.rs:24:13: expected &lt;x&gt; &amp; got y"));
         assert!(xml.contains("timestamp=\"2026-09-08T10:00:00+00:00\""));
         assert_eq!(reporter.get_report().started_at, suite_started_at);
         assert_eq!(reporter.get_report().finished_at, suite_finished_at);

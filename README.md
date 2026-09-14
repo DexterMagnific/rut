@@ -146,6 +146,23 @@ suite! {
 
 Returning `TestResult::failed` stops the remaining tests in that case. Other cases can still run.
 
+`TestResult::failed` records the source location where it is called. It uses Rust's
+`#[track_caller]`, so helper functions that should preserve their caller's location must also be
+annotated with `#[track_caller]`:
+
+```rust
+#[track_caller]
+fn failure(message: impl Into<String>) -> TestResult {
+    TestResult::failed(message)
+}
+```
+
+Panics inside test bodies are converted into failed test results. Their failure location is the
+panic origin, and their message contains the panic payload followed by a force-captured stack
+backtrace. A panic therefore appears to reporters like a detailed failure string instead of
+aborting the suite. Panics in suite or case setup and teardown are not yet modeled as test
+failures.
+
 ## Setup and Teardown
 
 Setup and teardown are supported at both suite and case level.
@@ -324,6 +341,15 @@ async fn main() -> ReporterResult<()> {
 
 Reporting is modular too. A **reporter** receives events as the runner starts and finishes suites, cases, and tests. It decides how progress is presented and builds the final `SuiteReport`.
 
+Each test result has two distinct locations:
+
+- `source` identifies the `test(...)` declaration.
+- `failure_location` identifies the `TestResult::failed(...)` call or panic origin.
+
+Macro-generated tests obtain their declaration path from the compiler's `file!()` value. Paths
+are stored without runtime canonicalization, and line and byte-column numbers are one-based.
+Hand-written `Test` implementations can override `source_location`; the default returns `None`.
+
 `StdoutReporter` is the built-in terminal reporter. It prints live progress, pass/fail results, durations, failure messages, and properties:
 
 ```rust
@@ -353,7 +379,12 @@ let report = ParallelRunner::default()
 
 `MultiReporter` forwards runner events in order and returns the first reporter's completed report. Reporter callbacks are fallible, so serialization, directory creation, and write failures are returned by `.run().await` instead of being silently ignored. Both file reporters overwrite their destinations and record unfinished tests as skipped.
 
-GoogleTest JSON does not have a stable formal specification. `GTestReporter` follows GoogleTest's current JSON test-output shape. Rut does not emit source locations, parameter metadata, per-test timestamps, disabled counts, or error counts because those values are not present in `SuiteReport`.
+`StdoutReporter` displays declaration and failure locations. `GTestReporter` writes declaration
+`file` and `line` fields plus a rut `column` extension. `JUnitReporter` writes `file`, `line`, and
+`column` attributes on `<testcase>` as common xUnit extensions. Both file reporters prefix failure
+text with its failure location and preserve panic backtraces in the failure body.
+
+GoogleTest JSON does not have a stable formal specification. `GTestReporter` follows GoogleTest's current JSON test-output shape. Rut does not emit parameter metadata, per-test timestamps, disabled counts, or error counts because those values are not present in `SuiteReport`.
 
 The runner returns the reporter's completed `SuiteReport`, so results remain available for assertions or further processing after output is written. It contains suite totals and a result for every case and test:
 

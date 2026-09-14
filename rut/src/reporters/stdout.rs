@@ -30,7 +30,7 @@ impl TestReporterInternal for StdoutReporter {
         started_at: DateTime<Utc>,
     ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
-            let total_tests: usize = test_cases.iter().map(|c| c.test_names.len()).sum();
+            let total_tests: usize = test_cases.iter().map(|c| c.tests.len()).sum();
             self.report = Some(SuiteReport::new(suite_name, test_cases, started_at));
 
             println!(
@@ -70,16 +70,23 @@ impl TestReporterInternal for StdoutReporter {
         test_name: &'a str,
     ) -> BoxFuture<'a, ReporterResult<()>> {
         Box::pin(async move {
-            if let Some(test) = self
+            let source = self
                 .report_mut()
                 .test_cases
                 .iter_mut()
                 .find(|case| case.name == case_name)
                 .and_then(|case| case.tests.iter_mut().find(|test| test.name == test_name))
-            {
-                test.status = TestStatus::Running;
-            }
-            println!("    Running: {}", test_name);
+                .and_then(|test| {
+                    test.status = TestStatus::Running;
+                    test.source
+                        .as_ref()
+                        .map(|source| format!("{}:{}:{}", source.file, source.line, source.column))
+                });
+            println!(
+                "    Running: {}{}",
+                test_name,
+                source.map_or_else(String::new, |source| format!(" ({source})"))
+            );
             Ok(())
         })
     }
@@ -99,6 +106,8 @@ impl TestReporterInternal for StdoutReporter {
             {
                 test.status = result.status;
                 test.message = result.message.clone();
+                test.source = result.source.clone();
+                test.failure_location = result.failure_location.clone();
                 test.duration = result.duration;
                 test.total_duration = result.total_duration;
                 test.properties = result.properties.clone();
@@ -122,6 +131,13 @@ impl TestReporterInternal for StdoutReporter {
                 _ => "UNKNOWN",
             };
             let msg = result.message.as_deref().unwrap_or("");
+            let failure_location = result
+                .failure_location
+                .as_ref()
+                .map(|location| {
+                    format!("{}:{}:{}: ", location.file, location.line, location.column)
+                })
+                .unwrap_or_default();
             println!(
                 "    {} {} (duration: {:.2?}, total duration: {:.2?}){}",
                 status,
@@ -131,7 +147,7 @@ impl TestReporterInternal for StdoutReporter {
                 if msg.is_empty() {
                     String::new()
                 } else {
-                    format!(" - {}", msg)
+                    format!(" - {failure_location}{msg}")
                 }
             );
 
@@ -201,6 +217,7 @@ impl TestReporterInternal for StdoutReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::TestInfo;
 
     #[tokio::test]
     async fn independently_builds_a_report_from_runner_events() {
@@ -223,7 +240,10 @@ mod tests {
                 "suite",
                 &[TestCaseInfo {
                     name: "case".to_string(),
-                    test_names: vec!["test".to_string()],
+                    tests: vec![TestInfo {
+                        name: "test".to_string(),
+                        source: None,
+                    }],
                 }],
                 started_at,
             )

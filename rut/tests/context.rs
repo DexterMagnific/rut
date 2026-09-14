@@ -98,6 +98,37 @@ suite! {
     }
 }
 
+suite! {
+    typename = DiagnosticSuite;
+    name = "diagnostics";
+
+    test_case(name = "explicit failure") {
+        test(name = "fails explicitly") {
+            TestResult::failed(format!("explicit failure at line {}", line!()))
+        }
+
+        test(name = "does not run after explicit failure") {
+            TestResult::passed()
+        }
+    }
+
+    test_case(name = "panic failure") {
+        test(name = "panics") {
+            panic!("panic failure at line {}", line!())
+        }
+
+        test(name = "does not run after panic") {
+            TestResult::passed()
+        }
+    }
+
+    test_case(name = "unaffected case") {
+        test(name = "still runs") {
+            TestResult::passed()
+        }
+    }
+}
+
 fn assert_runner_durations(report: &rut::SuiteReport) {
     let case = &report.test_cases[0];
     let test = &case.tests[0];
@@ -137,6 +168,64 @@ fn assert_setup_failure_durations(report: &rut::SuiteReport) {
             .iter()
             .all(|case| case.finished_at.is_none())
     );
+}
+
+fn assert_diagnostics(report: &rut::SuiteReport) {
+    assert_eq!(report.total_passed, 1);
+    assert_eq!(report.total_failed, 2);
+
+    let explicit = &report.test_cases[0].tests[0];
+    let explicit_source = explicit.source.as_ref().expect("declaration source");
+    let explicit_failure = explicit
+        .failure_location
+        .as_ref()
+        .expect("explicit failure location");
+    assert!(explicit_source.file.ends_with("rut/tests/context.rs"));
+    assert_eq!(explicit_source.file, explicit_failure.file);
+    assert_eq!(
+        explicit_failure.line,
+        line_from_message(explicit.message.as_deref().unwrap())
+    );
+    assert!(explicit_source.line < explicit_failure.line);
+    assert!(explicit_source.column > 0);
+    assert!(explicit_failure.column > 0);
+    assert_eq!(
+        report.test_cases[0].tests[1].status,
+        rut::TestStatus::NotYetRun
+    );
+
+    let panicked = &report.test_cases[1].tests[0];
+    let panic_source = panicked.source.as_ref().expect("declaration source");
+    let panic_failure = panicked
+        .failure_location
+        .as_ref()
+        .expect("panic failure location");
+    let panic_message = panicked.message.as_deref().unwrap();
+    assert_eq!(panic_source.file, panic_failure.file);
+    assert_eq!(panic_failure.line, line_from_message(panic_message));
+    assert!(panic_source.line < panic_failure.line);
+    assert!(panic_message.contains("panic: panic failure at line"));
+    assert!(panic_message.contains("stack backtrace:"));
+    assert_eq!(
+        report.test_cases[1].tests[1].status,
+        rut::TestStatus::NotYetRun
+    );
+    assert_eq!(
+        report.test_cases[2].tests[0].status,
+        rut::TestStatus::Passed
+    );
+}
+
+fn line_from_message(message: &str) -> u32 {
+    message
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 #[tokio::test]
@@ -246,4 +335,28 @@ async fn parallel_runner_records_failed_setup_total_duration() {
         .expect("reporting failed");
 
     assert_setup_failure_durations(&report);
+}
+
+#[tokio::test]
+async fn sequential_runner_captures_failure_diagnostics() {
+    let report = SequentialRunner::new()
+        .with_suite(Box::new(DiagnosticSuite::new()))
+        .run()
+        .await
+        .expect("reporting failed");
+
+    assert_diagnostics(&report);
+}
+
+#[tokio::test]
+async fn parallel_runner_captures_failure_diagnostics() {
+    let report = ParallelRunnerBuilder::new()
+        .with_max_jobs(3)
+        .with_suite(Box::new(DiagnosticSuite::new()))
+        .build()
+        .run()
+        .await
+        .expect("reporting failed");
+
+    assert_diagnostics(&report);
 }

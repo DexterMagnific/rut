@@ -1,8 +1,9 @@
-use crate::report::{BoxFuture, TestContext, TestResult};
+use crate::report::{BoxFuture, SourceLocation, TestContext, TestResult};
 use async_trait::async_trait;
 
 pub trait TestInternal: Send + Sync {
     fn name(&self) -> &str;
+    fn source_location(&self) -> Option<SourceLocation>;
     fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult>;
 }
 
@@ -11,6 +12,9 @@ pub trait TestInternal: Send + Sync {
 #[async_trait]
 pub trait Test: Send + Sync {
     fn name(&self) -> &str;
+    fn source_location(&self) -> Option<SourceLocation> {
+        None
+    }
     async fn run(&self, ctx: Option<&TestContext>) -> TestResult;
 }
 
@@ -20,7 +24,34 @@ impl<T: Test + ?Sized> TestInternal for T {
         Test::name(self)
     }
 
+    fn source_location(&self) -> Option<SourceLocation> {
+        Test::source_location(self)
+    }
+
     fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult> {
         Box::pin(async move { self.run(ctx).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ManualTest;
+
+    #[async_trait]
+    impl Test for ManualTest {
+        fn name(&self) -> &str {
+            "manual"
+        }
+
+        async fn run(&self, _ctx: Option<&TestContext>) -> TestResult {
+            TestResult::passed()
+        }
+    }
+
+    #[test]
+    fn manual_tests_default_to_no_source_location() {
+        assert_eq!(Test::source_location(&ManualTest), None);
     }
 }

@@ -114,6 +114,8 @@ impl TestReporterInternal for GTestReporter {
             {
                 test.status = result.status;
                 test.message = result.message.clone();
+                test.source = result.source.clone();
+                test.failure_location = result.failure_location.clone();
                 test.duration = result.duration;
                 test.total_duration = result.total_duration;
                 test.properties = result.properties.clone();
@@ -247,10 +249,16 @@ struct GTestTest<'a> {
     result: &'static str,
     time: String,
     classname: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<u32>,
     #[serde(flatten)]
     properties: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    failures: Option<Vec<GTestFailure<'a>>>,
+    failures: Option<Vec<GTestFailure>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     skipped: Option<Vec<GTestSkipped>>,
 }
@@ -265,7 +273,7 @@ impl<'a> GTestTest<'a> {
             .collect();
         let failures = (test.status == TestStatus::Failed).then(|| {
             vec![GTestFailure {
-                failure: test.message.as_deref().unwrap_or("test failed"),
+                failure: failure_message(test),
                 failure_type: "",
             }]
         });
@@ -281,6 +289,9 @@ impl<'a> GTestTest<'a> {
             result: if unfinished { "SKIPPED" } else { "COMPLETED" },
             time: duration(test.total_duration),
             classname,
+            file: test.source.as_ref().map(|source| source.file.as_str()),
+            line: test.source.as_ref().map(|source| source.line),
+            column: test.source.as_ref().map(|source| source.column),
             properties,
             failures,
             skipped,
@@ -289,10 +300,23 @@ impl<'a> GTestTest<'a> {
 }
 
 #[derive(Serialize)]
-struct GTestFailure<'a> {
-    failure: &'a str,
+struct GTestFailure {
+    failure: String,
     #[serde(rename = "type")]
     failure_type: &'static str,
+}
+
+fn failure_message(test: &TestResult) -> String {
+    let message = test.message.as_deref().unwrap_or("test failed");
+    test.failure_location.as_ref().map_or_else(
+        || message.to_string(),
+        |location| {
+            format!(
+                "{}:{}:{}: {message}",
+                location.file, location.line, location.column
+            )
+        },
+    )
 }
 
 #[derive(Serialize)]
@@ -319,6 +343,7 @@ fn duration(value: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::{SourceLocation, TestInfo};
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -338,10 +363,19 @@ mod tests {
                 "Calculator",
                 &[TestCaseInfo {
                     name: "arithmetic".to_string(),
-                    test_names: vec![
-                        "passes".to_string(),
-                        "fails".to_string(),
-                        "later".to_string(),
+                    tests: vec![
+                        TestInfo {
+                            name: "passes".to_string(),
+                            source: Some(SourceLocation::new("tests/calculator.rs", 10, 9)),
+                        },
+                        TestInfo {
+                            name: "fails".to_string(),
+                            source: Some(SourceLocation::new("tests/calculator.rs", 20, 9)),
+                        },
+                        TestInfo {
+                            name: "later".to_string(),
+                            source: None,
+                        },
                     ],
                 }],
                 at("2026-09-08T10:00:00Z"),
@@ -361,6 +395,7 @@ mod tests {
             .with_property("category", "runtime")
             .with_property("status", "property");
         passed.name = "passes".to_string();
+        passed.source = Some(SourceLocation::new("tests/calculator.rs", 10, 9));
         passed.total_duration = Duration::from_millis(12);
         reporter.report_result("arithmetic", &passed).await.unwrap();
         reporter
@@ -369,6 +404,8 @@ mod tests {
             .unwrap();
         let mut failed = TestResult::failed("expected \"four\"\nreceived five");
         failed.name = "fails".to_string();
+        failed.source = Some(SourceLocation::new("tests/calculator.rs", 20, 9));
+        failed.failure_location = Some(SourceLocation::new("tests/calculator.rs", 24, 13));
         failed.total_duration = Duration::from_millis(1200);
         reporter.report_result("arithmetic", &failed).await.unwrap();
         reporter
@@ -407,11 +444,14 @@ mod tests {
         assert_eq!(tests[0]["status"], "RUN");
         assert_eq!(tests[0]["result"], "COMPLETED");
         assert_eq!(tests[0]["time"], "0.012s");
+        assert_eq!(tests[0]["file"], "tests/calculator.rs");
+        assert_eq!(tests[0]["line"], 10);
+        assert_eq!(tests[0]["column"], 9);
         assert_eq!(tests[0]["prop_category"], "runtime");
         assert_eq!(tests[0]["prop_status"], "property");
         assert_eq!(
             tests[1]["failures"][0]["failure"],
-            "expected \"four\"\nreceived five"
+            "tests/calculator.rs:24:13: expected \"four\"\nreceived five"
         );
         assert_eq!(tests[1]["failures"][0]["type"], "");
         assert_eq!(tests[2]["result"], "SKIPPED");
@@ -419,8 +459,6 @@ mod tests {
             tests[2]["skipped"][0]["message"],
             "test did not run to completion"
         );
-        assert!(tests[0].get("file").is_none());
-        assert!(tests[0].get("line").is_none());
         assert!(tests[0].get("timestamp").is_none());
     }
 

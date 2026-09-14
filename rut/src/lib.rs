@@ -1,5 +1,7 @@
 extern crate self as rut;
 
+mod panic_capture;
+
 pub mod case;
 pub mod report;
 pub mod reporter;
@@ -11,7 +13,8 @@ pub mod test;
 
 pub use case::{TestCase, TestCaseInternal};
 pub use report::{
-    BoxFuture, CaseReport, SuiteReport, TestCaseInfo, TestContext, TestResult, TestStatus,
+    BoxFuture, CaseReport, SourceLocation, SuiteReport, TestCaseInfo, TestContext, TestInfo,
+    TestResult, TestStatus,
 };
 pub use reporter::{
     GTestReporter, JUnitReporter, MultiReporter, ReporterError, ReporterResult, StdoutReporter,

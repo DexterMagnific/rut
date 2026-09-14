@@ -13,6 +13,23 @@ pub enum TestStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+impl SourceLocation {
+    pub fn new(file: impl Into<String>, line: u32, column: u32) -> Self {
+        Self {
+            file: file.into(),
+            line,
+            column,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SuiteReport {
     pub suite_name: String,
@@ -43,6 +60,8 @@ pub struct TestResult {
     pub name: String,
     pub status: TestStatus,
     pub message: Option<String>,
+    pub source: Option<SourceLocation>,
+    pub failure_location: Option<SourceLocation>,
     pub duration: Duration,
     pub total_duration: Duration,
     pub properties: Vec<(String, String)>,
@@ -54,17 +73,27 @@ impl TestResult {
             name: String::new(),
             status: TestStatus::Passed,
             message: None,
+            source: None,
+            failure_location: None,
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             properties: Vec::new(),
         }
     }
 
+    #[track_caller]
     pub fn failed(message: impl Into<String>) -> Self {
+        let caller = std::panic::Location::caller();
         Self {
             name: String::new(),
             status: TestStatus::Failed,
             message: Some(message.into()),
+            source: None,
+            failure_location: Some(SourceLocation::new(
+                caller.file(),
+                caller.line(),
+                caller.column(),
+            )),
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             properties: Vec::new(),
@@ -104,7 +133,13 @@ impl TestContext {
 #[derive(Debug, Clone)]
 pub struct TestCaseInfo {
     pub name: String,
-    pub test_names: Vec<String>,
+    pub tests: Vec<TestInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestInfo {
+    pub name: String,
+    pub source: Option<SourceLocation>,
 }
 
 impl SuiteReport {
@@ -113,12 +148,14 @@ impl SuiteReport {
             .iter()
             .map(|c| {
                 let entries: Vec<TestResult> = c
-                    .test_names
+                    .tests
                     .iter()
-                    .map(|name| TestResult {
-                        name: name.clone(),
+                    .map(|test| TestResult {
+                        name: test.name.clone(),
                         status: TestStatus::NotYetRun,
                         message: None,
+                        source: test.source.clone(),
+                        failure_location: None,
                         duration: Duration::ZERO,
                         total_duration: Duration::ZERO,
                         properties: Vec::new(),
@@ -149,5 +186,40 @@ impl SuiteReport {
             started_at,
             finished_at: started_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_captures_its_call_site() {
+        let expected_line = line!() + 1;
+        let result = TestResult::failed("failure");
+
+        let location = result.failure_location.unwrap();
+        assert_eq!(location.file, file!());
+        assert_eq!(location.line, expected_line);
+        assert!(location.column > 0);
+    }
+
+    #[test]
+    fn suite_report_preserves_declared_test_source() {
+        let source = SourceLocation::new("tests/example.rs", 12, 9);
+        let report = SuiteReport::new(
+            "suite",
+            &[TestCaseInfo {
+                name: "case".to_string(),
+                tests: vec![TestInfo {
+                    name: "test".to_string(),
+                    source: Some(source.clone()),
+                }],
+            }],
+            Utc::now(),
+        );
+
+        assert_eq!(report.test_cases[0].tests[0].source, Some(source));
+        assert_eq!(report.test_cases[0].tests[0].failure_location, None);
     }
 }

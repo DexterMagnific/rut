@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 use syn::{
     Block, Error, Ident, Item, LitStr, Token, Type, Visibility, braced, parenthesized,
@@ -84,6 +84,7 @@ impl Parse for TestArgs {
 }
 
 struct TestDecl {
+    span: proc_macro2::Span,
     name: LitStr,
     properties: Vec<(LitStr, LitStr)>,
     block: Block,
@@ -120,12 +121,13 @@ impl CaseDecl {
                         continue;
                     }
                     "test" if fork.peek(syn::token::Paren) => {
-                        input.parse::<Ident>()?;
+                        let keyword: Ident = input.parse()?;
                         let args;
                         parenthesized!(args in input);
                         let TestArgs { name, properties } = args.parse()?;
                         let block = input.parse::<DslBlock>()?.block;
                         entries.push(CaseEntry::Test(TestDecl {
+                            span: keyword.span(),
                             name,
                             properties,
                             block,
@@ -428,10 +430,14 @@ fn expand_case(
 
     for (index, test) in tests.into_iter().enumerate() {
         let test_type = format_ident!("__RutGeneratedTest{index}");
+        let test_span = test.span;
         let test_name = test.name;
         let property_keys = test.properties.iter().map(|(key, _)| key);
         let property_values = test.properties.iter().map(|(_, value)| value);
         let test_block = test.block;
+        let source_location = quote_spanned! {test_span=>
+            #rut::SourceLocation::new(file!(), line!(), column!())
+        };
         test_types.push(test_type.clone());
         test_impls.push(quote! {
             struct #test_type;
@@ -440,6 +446,10 @@ fn expand_case(
             impl #rut::Test for #test_type {
                 fn name(&self) -> &str {
                     #test_name
+                }
+
+                fn source_location(&self) -> ::std::option::Option<#rut::SourceLocation> {
+                    ::std::option::Option::Some(#source_location)
                 }
 
                 async fn run(
