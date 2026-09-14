@@ -1,16 +1,62 @@
 # rut
 
-`rut` is a Rust testing framework similar to Python Unit Test. It provides the same testing concepts such as suites, cases, tests, setup/teardown in addition to a friendly declarative syntax for writing tests eliminating all the rust manual boilerplate of trait implementations. It supports sequential execution and bounded parallel execution with optional randomized case dispatch. It is designed with modularity in mind so that adding custom runners and output formats is made easy.
+`rut` is a Rust testing framework similar to Python's `unittest`. It provides familiar concepts such as suites, cases, tests, setup, and teardown, together with a declarative syntax that removes manual trait implementation boilerplate. It supports sequential and bounded parallel execution with optional randomized case dispatch. Its modular design makes it easy to add custom runners and output formats.
 
 ## Getting Started
 
 Until `rut` is published on crates.io, add it from GitHub together with Tokio:
 
 ```toml
-[dependencies]
+[dev-dependencies]
 rut = { git = "https://github.com/DexterMagnific/rut" }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
 ```
+
+Install the Cargo subcommand:
+
+```console
+cargo install --git https://github.com/DexterMagnific/rut cargo-rut
+```
+
+## Cargo rut
+
+Run every suite in the current project:
+
+```console
+cargo rut run
+```
+
+Run suites from a file or directory:
+
+```console
+cargo rut run path/to/suite.rs
+cargo rut run path/to/suites/
+```
+
+Run a specific suite by its Rust typename:
+
+```console
+cargo rut run --typename CalculatorSuite
+cargo rut run path/to/suites/ --typename CalculatorSuite
+```
+
+The optional path narrows the typename search. If the same typename exists in more than one discovered file, provide a file or narrower directory to select one.
+
+List every discovered suite with its file, display name, typename, cases, and test counts:
+
+```console
+cargo rut list
+cargo rut list path/to/suites/
+```
+
+```text
+path/to/suites/calculator.rs
+    Calculator (CalculatorSuite): 2 cases
+        addition: 1 test
+        multiplication: 1 test
+```
+
+Suites run with `cargo rut` do not need a `main` function. See [`rut/examples/rut_suite.rs`](rut/examples/rut_suite.rs) for a complete example.
 
 ## Suites, Cases and Tests
 
@@ -19,10 +65,10 @@ A suite contains related test cases, and each case contains one or more tests.
 The code below declares a test suite with two test cases.
 
 ```rust
-use rut::{ParallelRunner, StdoutReporter, TestResult, TestRunnerInternal, suite};
+use rut::{TestResult, suite};
 
 suite! {
-    // This is the Rust type given to the suite. Needed for instanciating it
+    // This is the Rust type generated for the suite
     typename = CalculatorSuite;
     // This is the display name of the suite. Will make its way to the suite report
     name = "Calculator";
@@ -66,29 +112,13 @@ suite! {
         }
     }
 }
-
-#[tokio::main]
-async fn main() {
-    // Create a Runner to execute the tests
-    let report = ParallelRunner::default()
-        // Add the suite using its typename
-        .with_suite(Box::new(CalculatorSuite::new()))
-        // Add the Reporter that will write test results
-        .with_reporter(Box::new(StdoutReporter::new()))
-        // and run the suite
-        .run()
-        .await;
-
-    // The run generates a SuiteReport. Explore it as you whish
-    assert_eq!(report.total_failed, 0);
-}
 ```
 
 Returning `TestResult::failed` stops the remaining tests in that case. Other cases can still run.
 
 ## Setup and Teardown
 
-Setup and Teardown are supported at both suite and case level.
+Setup and teardown are supported at both suite and case level.
 
 ```rust
 suite! {
@@ -126,8 +156,7 @@ suite! {
 
 ## Properties
 
-Arbitrary properties (key value pairs) can be attached to tests. Static properties are directly declared
-with the test, and Dynamic properties can be set by the test code.
+Arbitrary properties (key-value pairs) can be attached to tests. Static properties are declared with the test, while dynamic properties can be set by the test code.
 
 Properties are propagated to the test report and can be used by the reporter for display or file write.
 
@@ -152,7 +181,7 @@ test(
 
 ## Custom Context
 
-Optional suite wide context can be provided when tests need shared state.
+Optional suite-wide context can be provided when tests need shared state.
 
 ```rust
 use std::sync::{Arc, Mutex};
@@ -210,50 +239,53 @@ suite! {
 
 The framework includes two built-in runners: `SequentialRunner` executes one case at a time, while `ParallelRunner` executes independent cases concurrently. Both consume the same generated suite and return the same report type.
 
-Use the sequential runner for single thread predictable case ordering:
+Use the sequential runner for predictable, single-threaded case ordering:
 
-```rust
-use rut::{SequentialRunner, StdoutReporter, TestRunnerInternal};
-
-let report = SequentialRunner::new()
-    .with_suite(Box::new(CalculatorSuite::new()))
-    .with_reporter(Box::new(StdoutReporter::new()))
-    .run()
-    .await;
+```console
+cargo rut run path/to/suite.rs --runner sequential
 ```
 
 Use the parallel runner to execute independent cases concurrently. By default, the machine's CPU count is used as the concurrency limit and cases are dispatched in their declaration order:
 
-```rust
-use rut::{ParallelRunner, StdoutReporter, TestRunnerInternal};
-
-let report = ParallelRunner::default()
-    .with_suite(Box::new(CalculatorSuite::new()))
-    .with_reporter(Box::new(StdoutReporter::new()))
-    .run()
-    .await;
+```console
+cargo rut run path/to/suite.rs --runner parallel
 ```
 
-Use `ParallelRunnerBuilder` to choose the maximum number of concurrent cases and optionally randomize case dispatch:
+Use `--jobs` to choose the maximum number of concurrent cases:
 
-```rust
-use rut::{ParallelRunnerBuilder, StdoutReporter, TestRunnerInternal};
-
-let report = ParallelRunnerBuilder::new()
-    .with_max_jobs(4)
-    .shuffle_test_cases()
-    .with_suite(Box::new(CalculatorSuite::new()))
-    .with_reporter(Box::new(StdoutReporter::new()))
-    .build()
-    .run()
-    .await;
+```console
+cargo rut run path/to/suite.rs --runner parallel --jobs 4
 ```
 
 Parallel execution happens across test cases. Tests inside a single case remain sequential, and both runners keep suite setup and teardown around the complete run.
 
-`shuffle_test_cases()` is opt-in. When enabled, the runner shuffles the complete case queue once with fresh randomness before assigning cases to workers. This can expose dependencies between cases that declaration-order execution might hide. Omit the method when reproducible declaration-order dispatch is preferred.
+Add `--shuffle` to randomize case dispatch:
+
+```console
+cargo rut run path/to/suite.rs --runner parallel --jobs 4 --shuffle
+```
 
 Shuffling changes dispatch order only. Tests within each case still run sequentially, and `SuiteReport.test_cases` remains in declaration order so report consumers receive a stable structure.
+
+## Manual Run
+
+For custom suite execution and report post-processing, add your own `main` function after the `suite!` declaration.
+
+```rust
+use rut::{ParallelRunnerBuilder, StdoutReporter, TestRunnerInternal};
+
+#[tokio::main]
+async fn main() {
+    let report = ParallelRunnerBuilder::new()
+        .with_max_jobs(4)
+        .shuffle_test_cases()
+        .with_suite(Box::new(CalculatorSuite::new()))
+        .with_reporter(Box::new(StdoutReporter::new()))
+        .build()
+        .run()
+        .await;
+}
+```
 
 ## Reporters
 
@@ -269,7 +301,7 @@ let report = ParallelRunner::default()
     .await;
 ```
 
-Another interesting reporter is the `MultiReporter` pseudo reporter. It forwards the runner's events to all its sub-reporters, which allows for exemple to use both the StdoutReporter for console printing and another one for JUnit or GTest file write.
+`MultiReporter` forwards runner events to all its sub-reporters. This allows, for example, terminal output from `StdoutReporter` alongside another reporter that writes JUnit or GTest output.
 
 The runner returns the reporter's completed `SuiteReport`, so results remain available for assertions or further processing after output is written. It contains suite totals and a result for every case and test:
 
@@ -310,9 +342,4 @@ for case in &report.test_cases {
 }
 ```
 
-## Rust syntax, the hard way
-
-For those who are not comfortable with the declarative syntax, all of the above can be achieved using classic
-Rust trait implementations.
-
-More complete examples are available in [`rut/examples/attributes.rs`](rut/examples/attributes.rs), [`rut/examples/sequential.rs`](rut/examples/sequential.rs), and [`rut/examples/parallel.rs`](rut/examples/parallel.rs).
+More complete examples are available in [`rut/examples/declarative.rs`](rut/examples/declarative.rs), [`rut/examples/sequential.rs`](rut/examples/sequential.rs), and [`rut/examples/parallel.rs`](rut/examples/parallel.rs).

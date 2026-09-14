@@ -1,0 +1,22 @@
+[package]
+name = "cargo-rut"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cargo-rut"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+thiserror = "1"
+cargo_metadata = "0.19"
+sha2 = "0.10"
+proc-macro2 = "1"
+syn = { version = "2", features = ["full", "visit"] }
+
+[dev-dependencies]
+tempfile = "3"

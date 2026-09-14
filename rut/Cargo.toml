@@ -2,6 +2,19 @@
 name = "rut"
 version = "0.1.0"
 edition = "2024"
+autoexamples = false
+
+[[example]]
+name = "declarative"
+path = "examples/declarative.rs"
+
+[[example]]
+name = "parallel"
+path = "examples/parallel.rs"
+
+[[example]]
+name = "sequential"
+path = "examples/sequential.rs"
 
 [dependencies]
 tokio = { version = "*", features = ["full"] }
