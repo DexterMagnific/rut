@@ -353,7 +353,7 @@ async fn run_test_case(
     for test in tests {
         let test_start = Instant::now();
         let mut result =
-            crate::panic_capture::run_test_with_timeout(test.as_ref(), ctx.as_ref()).await;
+            crate::panic_capture::run_test_with_retries(test.as_ref(), ctx.as_ref()).await;
         let duration = test_start.elapsed();
 
         if result.name.is_empty() {

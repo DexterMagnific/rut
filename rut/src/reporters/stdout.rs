@@ -98,9 +98,10 @@ impl TestReporter for StdoutReporter {
             test.duration = result.duration;
             test.total_duration = result.total_duration;
             test.properties = result.properties.clone();
+            test.failed_attempts = result.failed_attempts;
 
             match result.status {
-                TestStatus::Passed => {
+                TestStatus::Passed | TestStatus::Unstable => {
                     case.passed += 1;
                     report.total_passed += 1;
                 }
@@ -118,6 +119,7 @@ impl TestReporter for StdoutReporter {
 
         let status = match result.status {
             TestStatus::Passed => "PASS",
+            TestStatus::Unstable => "UNSTABLE",
             TestStatus::Failed => "FAIL",
             TestStatus::Skipped => "SKIP",
             TestStatus::TimedOut => "TIMEOUT",

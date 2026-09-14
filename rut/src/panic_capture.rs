@@ -1,4 +1,4 @@
-use crate::report::TestContext;
+use crate::report::{TestContext, TestStatus};
 use crate::test::Test;
 use crate::{SourceLocation, TestResult};
 use std::any::Any;
@@ -25,7 +25,7 @@ thread_local! {
 
 static INSTALL_HOOK: Once = Once::new();
 
-pub(crate) async fn catch_test_panic<F>(future: F) -> Result<F::Output, TestResult>
+async fn catch_test_panic<F>(future: F) -> Result<F::Output, PanicRecord>
 where
     F: Future,
 {
@@ -44,13 +44,49 @@ pub(crate) async fn run_test_with_timeout(
     let future = catch_test_panic(test.run(ctx));
     let outcome = match test.timeout() {
         Some(timeout) => match tokio::time::timeout(timeout, future).await {
-            Ok(outcome) => outcome,
+            Ok(outcome) => match outcome {
+                Ok(result) => Ok(result),
+                Err(record) => Err(panic_result(test, record)),
+            },
             Err(_) => Err(TestResult::timed_out(timeout)),
         },
-        None => future.await,
+        None => match future.await {
+            Ok(result) => Ok(result),
+            Err(record) => Err(panic_result(test, record)),
+        },
     };
     match outcome {
         Ok(result) | Err(result) => result,
+    }
+}
+
+pub(crate) async fn run_test_with_retries(
+    test: &dyn Test,
+    ctx: Option<&TestContext>,
+) -> TestResult {
+    let retries = test.retries().unwrap_or(0);
+    let mut failed_attempts = 0;
+
+    loop {
+        let mut result = run_test_with_timeout(test, ctx).await;
+        if matches!(result.status, TestStatus::Passed) {
+            if failed_attempts > 0 {
+                result.status = TestStatus::Unstable;
+                result.message = Some(format!(
+                    "test passed after {} failed attempt{}",
+                    failed_attempts,
+                    if failed_attempts == 1 { "" } else { "s" }
+                ));
+                result.failed_attempts = failed_attempts;
+            }
+            return result;
+        }
+
+        if failed_attempts >= retries {
+            return result;
+        }
+
+        failed_attempts += 1;
     }
 }
 
@@ -63,7 +99,7 @@ impl<F> Future for CatchTestPanic<F>
 where
     F: Future,
 {
-    type Output = Result<F::Output, TestResult>;
+    type Output = Result<F::Output, PanicRecord>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         install_hook();
@@ -98,7 +134,7 @@ where
                         location: None,
                         backtrace: Backtrace::force_capture().to_string(),
                     });
-                Poll::Ready(Err(panic_result(record)))
+                Poll::Ready(Err(record))
             }
         }
     }
@@ -146,11 +182,13 @@ fn panic_payload(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-fn panic_result(record: PanicRecord) -> TestResult {
+fn panic_result(test: &dyn crate::Test, record: PanicRecord) -> TestResult {
     let mut result = TestResult::failed(format!(
         "panic: {}\nstack backtrace:\n{}",
         record.message, record.backtrace
     ));
+    result.name = test.name().to_owned();
+    result.properties = test.properties();
     result.failure_location = record.location;
     result
 }
@@ -161,12 +199,15 @@ mod tests {
 
     #[tokio::test]
     async fn captures_panic_origin_and_backtrace() {
-        let line = line!() + 2;
-        let result = catch_test_panic(async move {
-            panic!("boom");
-        })
-        .await
-        .unwrap_err();
+        let line = line!() + 4;
+        let result = panic_result(
+            &ManualPanicTest,
+            catch_test_panic(async move {
+                panic!("boom");
+            })
+            .await
+            .unwrap_err(),
+        );
 
         let location = result.failure_location.unwrap();
         assert_eq!(location.file, file!());
@@ -174,16 +215,61 @@ mod tests {
         assert!(result.message.unwrap().contains("stack backtrace:"));
     }
 
+    struct ManualPanicTest;
+
+    #[async_trait::async_trait]
+    impl crate::Test for ManualPanicTest {
+        fn name(&self) -> &str {
+            "manual panic test"
+        }
+
+        fn properties(&self) -> Vec<(String, String)> {
+            vec![("category".to_owned(), "unit".to_owned())]
+        }
+
+        async fn run(&self, _ctx: Option<&crate::TestContext>) -> TestResult {
+            panic!("boom")
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn keeps_concurrent_panic_payloads_separate() {
         let first = tokio::spawn(catch_test_panic(async { panic!("first panic") }));
         let second = tokio::spawn(catch_test_panic(async { panic!("second panic") }));
 
-        let first = first.await.unwrap().unwrap_err().message.unwrap();
-        let second = second.await.unwrap().unwrap_err().message.unwrap();
+        let first = first.await.unwrap().unwrap_err().message;
+        let second = second.await.unwrap().unwrap_err().message;
         assert!(first.contains("first panic"));
         assert!(!first.contains("second panic"));
         assert!(second.contains("second panic"));
         assert!(!second.contains("first panic"));
+    }
+
+    #[tokio::test]
+    async fn panic_results_keep_static_properties() {
+        struct PanicWithProperties;
+
+        #[async_trait::async_trait]
+        impl crate::Test for PanicWithProperties {
+            fn name(&self) -> &str {
+                "panic with properties"
+            }
+
+            fn properties(&self) -> Vec<(String, String)> {
+                vec![
+                    ("category".to_owned(), "unit".to_owned()),
+                    ("status".to_owned(), "property".to_owned()),
+                ]
+            }
+
+            async fn run(&self, _ctx: Option<&crate::TestContext>) -> TestResult {
+                panic!("boom")
+            }
+        }
+
+        let result = run_test_with_retries(&PanicWithProperties, None).await;
+        assert_eq!(result.status, crate::TestStatus::Failed);
+        assert!(result.properties.contains(&("category".to_owned(), "unit".to_owned())));
+        assert!(result.properties.contains(&("status".to_owned(), "property".to_owned())));
     }
 }

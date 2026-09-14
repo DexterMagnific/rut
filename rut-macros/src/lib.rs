@@ -49,6 +49,7 @@ impl Parse for DslBlock {
 struct TestArgs {
     name: LitStr,
     timeout: Option<LitStr>,
+    retries: Option<LitStr>,
     properties: Vec<(LitStr, LitStr)>,
 }
 
@@ -56,6 +57,7 @@ impl Parse for TestArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut name = None;
         let mut timeout = None;
+        let mut retries = None;
         let mut properties = Vec::new();
 
         while !input.is_empty() {
@@ -86,6 +88,19 @@ impl Parse for TestArgs {
                         ));
                     }
                 }
+            } else if key == "retries" {
+                if retries.replace(value.clone()).is_some() {
+                    return Err(Error::new(key.span(), "duplicate `retries` argument"));
+                }
+                match value.value().parse::<u32>() {
+                    Ok(_) => {}
+                    Err(_) => {
+                        return Err(Error::new(
+                            value.span(),
+                            "retries must be a non-negative integer number of retry attempts",
+                        ));
+                    }
+                }
             } else {
                 properties.push((LitStr::new(&key.to_string(), key.span()), value));
             }
@@ -100,6 +115,7 @@ impl Parse for TestArgs {
         Ok(Self {
             name,
             timeout,
+            retries,
             properties,
         })
     }
@@ -109,6 +125,7 @@ struct TestDecl {
     span: proc_macro2::Span,
     name: LitStr,
     timeout: Option<LitStr>,
+    retries: Option<LitStr>,
     properties: Vec<(LitStr, LitStr)>,
     block: Block,
 }
@@ -150,6 +167,7 @@ impl CaseDecl {
                         let TestArgs {
                             name,
                             timeout,
+                            retries,
                             properties,
                         } = args.parse()?;
                         let block = input.parse::<DslBlock>()?.block;
@@ -157,6 +175,7 @@ impl CaseDecl {
                             span: keyword.span(),
                             name,
                             timeout,
+                            retries,
                             properties,
                             block,
                         }));
@@ -474,6 +493,13 @@ fn expand_case(
             }
             None => quote!(::std::option::Option::None),
         };
+        let retries_expr = match &test.retries {
+            Some(retries) => {
+                let attempts: u32 = retries.value().parse().expect("retries already validated");
+                quote!(::std::option::Option::Some(#attempts))
+            }
+            None => quote!(::std::option::Option::None),
+        };
         test_types.push(test_type.clone());
         test_impls.push(quote! {
             struct #test_type;
@@ -492,6 +518,16 @@ fn expand_case(
                     #timeout_expr
                 }
 
+                fn retries(&self) -> ::std::option::Option<u32> {
+                    #retries_expr
+                }
+
+                fn properties(&self) -> Vec<(String, String)> {
+                    vec![
+                        #( (#property_keys.to_owned(), #property_values.to_owned()) , )*
+                    ]
+                }
+
                 async fn run(
                     &self,
                     #context_parameter: ::std::option::Option<&#rut::TestContext>,
@@ -499,7 +535,7 @@ fn expand_case(
                     #context_binding
                     let mut result: #rut::TestResult = (async #test_block).await;
                     result.name = #test_name.to_owned();
-                    #(result.properties.push((#property_keys.to_owned(), #property_values.to_owned()));)*
+                    result.properties.extend(self.properties());
                     result
                 }
             }
@@ -714,6 +750,20 @@ mod tests {
         assert!(syn::parse_str::<TestArgs>(r#"name = "adds", timeout = "-1""#).is_err());
         assert!(
             syn::parse_str::<TestArgs>(r#"name = "adds", timeout = "1", timeout = "2""#).is_err()
+        );
+    }
+
+    #[test]
+    fn parses_valid_retries_and_excludes_them_from_properties() {
+        let args = syn::parse_str::<TestArgs>(r#"name = "adds", retries = "2", category = "fast""#)
+            .unwrap();
+        assert_eq!(args.retries.unwrap().value(), "2");
+        assert_eq!(
+            args.properties
+                .iter()
+                .map(|(key, value)| (key.value(), value.value()))
+                .collect::<Vec<_>>(),
+            [("category".into(), "fast".into())]
         );
     }
 }

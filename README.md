@@ -264,6 +264,34 @@ Timeouts rely on the test cooperatively yielding control (e.g. at `.await` point
 panics are caught. A test body that never yields (a tight CPU-bound loop with no `.await`) cannot
 be interrupted and will not be stopped by its timeout.
 
+## Retries
+
+Tests can declare a retry budget using the same reserved-property pattern as `name` and `timeout`:
+
+```rust
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static FLAKY_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+test(name = "succeeds eventually", retries = "3") {
+    let attempt = FLAKY_ATTEMPTS.fetch_add(1, Ordering::SeqCst) + 1;
+    if attempt < 3 {
+        TestResult::failed("still flaky")
+    } else {
+        TestResult::passed()
+    }
+}
+```
+
+When a test fails, `rut` retries it until it either passes or exhausts the configured retry budget.
+A successful retry produces a final result with status `Unstable` and includes `failed_attempts`
+to record how many earlier attempts failed before the eventual success.
+
+If the test never succeeds within the retry limit, the final status remains `Failed` and the
+retry metadata is not promoted to an `Unstable` result. The retry count is interpreted as the
+number of additional attempts after the initial run, so `retries = "3"` allows a total of 4
+executions.
+
 ## Custom Context
 
 Optional suite-wide context can be provided when tests need shared state.

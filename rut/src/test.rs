@@ -8,6 +8,12 @@ pub trait TestInternal: Send + Sync {
     fn timeout(&self) -> Option<Duration> {
         None
     }
+    fn retries(&self) -> Option<u32> {
+        None
+    }
+    fn properties(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
     fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult>;
 }
 
@@ -21,6 +27,12 @@ pub trait Test: Send + Sync {
     }
     fn timeout(&self) -> Option<Duration> {
         None
+    }
+    fn retries(&self) -> Option<u32> {
+        None
+    }
+    fn properties(&self) -> Vec<(String, String)> {
+        Vec::new()
     }
     async fn run(&self, ctx: Option<&TestContext>) -> TestResult;
 }
@@ -37,6 +49,14 @@ impl<T: Test + ?Sized> TestInternal for T {
 
     fn timeout(&self) -> Option<Duration> {
         Test::timeout(self)
+    }
+
+    fn retries(&self) -> Option<u32> {
+        Test::retries(self)
+    }
+
+    fn properties(&self) -> Vec<(String, String)> {
+        Test::properties(self)
     }
 
     fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult> {

@@ -103,9 +103,10 @@ impl TestReporter for JUnitReporter {
             test.duration = result.duration;
             test.total_duration = result.total_duration;
             test.properties = result.properties.clone();
+            test.failed_attempts = result.failed_attempts;
 
             match result.status {
-                TestStatus::Passed => {
+                TestStatus::Passed | TestStatus::Unstable => {
                     case.passed += 1;
                     report.total_passed += 1;
                 }
@@ -265,7 +266,7 @@ fn serialize_report(report: &SuiteReport) -> ReporterResult<Vec<u8>> {
                 TestStatus::NotYetRun | TestStatus::Running => {
                     write_event(&mut writer, Event::Empty(BytesStart::new("skipped")))?;
                 }
-                TestStatus::Passed => {}
+                TestStatus::Passed | TestStatus::Unstable => {}
             }
 
             write_event(&mut writer, Event::End(BytesEnd::new("testcase")))?;

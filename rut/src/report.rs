@@ -13,6 +13,7 @@ pub enum TestStatus {
     Failed,
     Skipped,
     TimedOut,
+    Unstable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,7 @@ pub struct TestResult {
     pub duration: Duration,
     pub total_duration: Duration,
     pub properties: Vec<(String, String)>,
+    pub failed_attempts: u32,
 }
 
 impl TestResult {
@@ -82,7 +84,20 @@ impl TestResult {
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             properties: Vec::new(),
+            failed_attempts: 0,
         }
+    }
+
+    pub fn unstable(failed_attempts: u32) -> Self {
+        let mut result = Self::passed();
+        result.status = TestStatus::Unstable;
+        result.message = Some(format!(
+            "test passed after {} failed attempt{}",
+            failed_attempts,
+            if failed_attempts == 1 { "" } else { "s" }
+        ));
+        result.failed_attempts = failed_attempts;
+        result
     }
 
     #[track_caller]
@@ -101,6 +116,7 @@ impl TestResult {
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             properties: Vec::new(),
+            failed_attempts: 0,
         }
     }
 
@@ -114,6 +130,7 @@ impl TestResult {
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             properties: Vec::new(),
+            failed_attempts: 0,
         }
     }
 
@@ -127,6 +144,7 @@ impl TestResult {
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             properties: Vec::new(),
+            failed_attempts: 0,
         }
     }
 
@@ -189,6 +207,7 @@ impl SuiteReport {
                         duration: Duration::ZERO,
                         total_duration: Duration::ZERO,
                         properties: Vec::new(),
+                        failed_attempts: 0,
                     })
                     .collect();
 
