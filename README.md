@@ -246,6 +246,24 @@ test(
 
 Properties are propagated to the test reporter which may or may not include them in the final output.
 
+## Timeouts
+
+Tests can declare a `timeout`, in milliseconds, using the same reserved-property syntax as `name`:
+
+```rust
+test(name = "responds quickly", timeout = "500") {
+    some_async_call().await;
+    TestResult::passed()
+}
+```
+
+If the test does not complete within the declared timeout, it is reported with a `TimedOut`
+status instead of running to completion, and counts as a failure in the suite report.
+
+Timeouts rely on the test cooperatively yielding control (e.g. at `.await` points), the same way
+panics are caught. A test body that never yields (a tight CPU-bound loop with no `.await`) cannot
+be interrupted and will not be stopped by its timeout.
+
 ## Custom Context
 
 Optional suite-wide context can be provided when tests need shared state.

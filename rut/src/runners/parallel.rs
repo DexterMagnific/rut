@@ -230,10 +230,12 @@ impl crate::runner::TestRunner for ParallelRunner {
         while let Some(res) = running.join_next().await {
             match res {
                 Ok(Ok(payload)) => {
-                    let case_failed = payload
-                        .results
-                        .iter()
-                        .any(|result| result.status == crate::report::TestStatus::Failed);
+                    let case_failed = payload.results.iter().any(|result| {
+                        matches!(
+                            result.status,
+                            crate::report::TestStatus::Failed | crate::report::TestStatus::TimedOut
+                        )
+                    });
                     reporter
                         .report_case_start(&payload.name, payload.test_count, payload.started_at)
                         .await?;
@@ -244,7 +246,10 @@ impl crate::runner::TestRunner for ParallelRunner {
                             .await?;
                         reporter.report_result(&payload.name, &result).await?;
 
-                        if result.status == crate::report::TestStatus::Failed {
+                        if matches!(
+                            result.status,
+                            crate::report::TestStatus::Failed | crate::report::TestStatus::TimedOut
+                        ) {
                             break;
                         }
                     }
@@ -347,10 +352,8 @@ async fn run_test_case(
 
     for test in tests {
         let test_start = Instant::now();
-        let mut result = match crate::panic_capture::catch_test_panic(test.run(ctx.as_ref())).await
-        {
-            Ok(result) | Err(result) => result,
-        };
+        let mut result =
+            crate::panic_capture::run_test_with_timeout(test.as_ref(), ctx.as_ref()).await;
         let duration = test_start.elapsed();
 
         if result.name.is_empty() {
@@ -362,7 +365,10 @@ async fn run_test_case(
 
         results.push(result);
 
-        if results.last().unwrap().status == crate::report::TestStatus::Failed {
+        if matches!(
+            results.last().unwrap().status,
+            crate::report::TestStatus::Failed | crate::report::TestStatus::TimedOut
+        ) {
             break;
         }
     }

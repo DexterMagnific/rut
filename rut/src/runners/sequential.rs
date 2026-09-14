@@ -123,9 +123,7 @@ impl crate::runner::TestRunner for SequentialRunner {
                 reporter.report_test_start(&case_name, test.name()).await?;
 
                 let test_start = Instant::now();
-                let mut result = match crate::panic_capture::catch_test_panic(test.run(ctx)).await {
-                    Ok(result) | Err(result) => result,
-                };
+                let mut result = crate::panic_capture::run_test_with_timeout(test.as_ref(), ctx).await;
                 let duration = test_start.elapsed();
 
                 if result.name.is_empty() {
@@ -137,7 +135,10 @@ impl crate::runner::TestRunner for SequentialRunner {
 
                 reporter.report_result(&case_name, &result).await?;
 
-                if result.status == crate::report::TestStatus::Failed {
+                if matches!(
+                    result.status,
+                    crate::report::TestStatus::Failed | crate::report::TestStatus::TimedOut
+                ) {
                     case_failed = true;
                     break;
                 }

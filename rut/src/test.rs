@@ -1,9 +1,13 @@
 use crate::report::{BoxFuture, SourceLocation, TestContext, TestResult};
 use async_trait::async_trait;
+use std::time::Duration;
 
 pub trait TestInternal: Send + Sync {
     fn name(&self) -> &str;
     fn source_location(&self) -> Option<SourceLocation>;
+    fn timeout(&self) -> Option<Duration> {
+        None
+    }
     fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult>;
 }
 
@@ -13,6 +17,9 @@ pub trait TestInternal: Send + Sync {
 pub trait Test: Send + Sync {
     fn name(&self) -> &str;
     fn source_location(&self) -> Option<SourceLocation> {
+        None
+    }
+    fn timeout(&self) -> Option<Duration> {
         None
     }
     async fn run(&self, ctx: Option<&TestContext>) -> TestResult;
@@ -26,6 +33,10 @@ impl<T: Test + ?Sized> TestInternal for T {
 
     fn source_location(&self) -> Option<SourceLocation> {
         Test::source_location(self)
+    }
+
+    fn timeout(&self) -> Option<Duration> {
+        Test::timeout(self)
     }
 
     fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult> {

@@ -114,7 +114,7 @@ impl TestReporter for GTestReporter {
                     case.passed += 1;
                     report.total_passed += 1;
                 }
-                TestStatus::Failed => {
+                TestStatus::Failed | TestStatus::TimedOut => {
                     case.failed += 1;
                     report.total_failed += 1;
                 }
@@ -262,7 +262,7 @@ impl<'a> GTestTest<'a> {
             .iter()
             .map(|(name, value)| (format!("prop_{name}"), value.clone()))
             .collect();
-        let failures = (test.status == TestStatus::Failed).then(|| {
+        let failures = matches!(test.status, TestStatus::Failed | TestStatus::TimedOut).then(|| {
             vec![GTestFailure {
                 failure: failure_message(test),
                 failure_type: "",

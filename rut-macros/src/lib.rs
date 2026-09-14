@@ -48,12 +48,14 @@ impl Parse for DslBlock {
 
 struct TestArgs {
     name: LitStr,
+    timeout: Option<LitStr>,
     properties: Vec<(LitStr, LitStr)>,
 }
 
 impl Parse for TestArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut name = None;
+        let mut timeout = None;
         let mut properties = Vec::new();
 
         while !input.is_empty() {
@@ -68,6 +70,22 @@ impl Parse for TestArgs {
                 if value.value().is_empty() {
                     return Err(Error::new(value.span(), "name must not be empty"));
                 }
+            } else if key == "timeout" {
+                if timeout.replace(value.clone()).is_some() {
+                    return Err(Error::new(key.span(), "duplicate `timeout` argument"));
+                }
+                match value.value().parse::<u64>() {
+                    Ok(0) => {
+                        return Err(Error::new(value.span(), "timeout must be greater than 0"));
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        return Err(Error::new(
+                            value.span(),
+                            "timeout must be a positive integer number of milliseconds",
+                        ));
+                    }
+                }
             } else {
                 properties.push((LitStr::new(&key.to_string(), key.span()), value));
             }
@@ -79,13 +97,18 @@ impl Parse for TestArgs {
         }
 
         let name = name.ok_or_else(|| input.error("missing required `name` argument"))?;
-        Ok(Self { name, properties })
+        Ok(Self {
+            name,
+            timeout,
+            properties,
+        })
     }
 }
 
 struct TestDecl {
     span: proc_macro2::Span,
     name: LitStr,
+    timeout: Option<LitStr>,
     properties: Vec<(LitStr, LitStr)>,
     block: Block,
 }
@@ -124,11 +147,16 @@ impl CaseDecl {
                         let keyword: Ident = input.parse()?;
                         let args;
                         parenthesized!(args in input);
-                        let TestArgs { name, properties } = args.parse()?;
+                        let TestArgs {
+                            name,
+                            timeout,
+                            properties,
+                        } = args.parse()?;
                         let block = input.parse::<DslBlock>()?.block;
                         entries.push(CaseEntry::Test(TestDecl {
                             span: keyword.span(),
                             name,
+                            timeout,
                             properties,
                             block,
                         }));
@@ -438,6 +466,14 @@ fn expand_case(
         let source_location = quote_spanned! {test_span=>
             #rut::SourceLocation::new(file!(), line!(), column!())
         };
+        let timeout_expr = match &test.timeout {
+            // Value was already validated as a positive integer by `TestArgs::parse`.
+            Some(timeout) => {
+                let ms: u64 = timeout.value().parse().expect("timeout already validated");
+                quote!(::std::option::Option::Some(::std::time::Duration::from_millis(#ms)))
+            }
+            None => quote!(::std::option::Option::None),
+        };
         test_types.push(test_type.clone());
         test_impls.push(quote! {
             struct #test_type;
@@ -450,6 +486,10 @@ fn expand_case(
 
                 fn source_location(&self) -> ::std::option::Option<#rut::SourceLocation> {
                     ::std::option::Option::Some(#source_location)
+                }
+
+                fn timeout(&self) -> ::std::option::Option<::std::time::Duration> {
+                    #timeout_expr
                 }
 
                 async fn run(
@@ -650,5 +690,30 @@ mod tests {
     #[test]
     fn requires_string_values() {
         assert!(syn::parse_str::<TestArgs>(r#"name = "adds", priority = 1"#).is_err());
+    }
+
+    #[test]
+    fn parses_valid_timeout_and_excludes_it_from_properties() {
+        let args =
+            syn::parse_str::<TestArgs>(r#"name = "adds", timeout = "50", category = "fast""#)
+                .unwrap();
+        assert_eq!(args.timeout.unwrap().value(), "50");
+        assert_eq!(
+            args.properties
+                .iter()
+                .map(|(key, value)| (key.value(), value.value()))
+                .collect::<Vec<_>>(),
+            [("category".into(), "fast".into())]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_timeout_declarations() {
+        assert!(syn::parse_str::<TestArgs>(r#"name = "adds", timeout = "0""#).is_err());
+        assert!(syn::parse_str::<TestArgs>(r#"name = "adds", timeout = "abc""#).is_err());
+        assert!(syn::parse_str::<TestArgs>(r#"name = "adds", timeout = "-1""#).is_err());
+        assert!(
+            syn::parse_str::<TestArgs>(r#"name = "adds", timeout = "1", timeout = "2""#).is_err()
+        );
     }
 }

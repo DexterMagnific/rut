@@ -1,3 +1,5 @@
+use crate::report::TestContext;
+use crate::test::Test;
 use crate::{SourceLocation, TestResult};
 use std::any::Any;
 use std::backtrace::Backtrace;
@@ -32,6 +34,24 @@ where
         capture: Arc::new(Mutex::new(None)),
     }
     .await
+}
+
+/// Runs a test, catching panics and enforcing its declared timeout, if any.
+pub(crate) async fn run_test_with_timeout(
+    test: &dyn Test,
+    ctx: Option<&TestContext>,
+) -> TestResult {
+    let future = catch_test_panic(test.run(ctx));
+    let outcome = match test.timeout() {
+        Some(timeout) => match tokio::time::timeout(timeout, future).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(TestResult::timed_out(timeout)),
+        },
+        None => future.await,
+    };
+    match outcome {
+        Ok(result) | Err(result) => result,
+    }
 }
 
 struct CatchTestPanic<F> {

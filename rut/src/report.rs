@@ -12,6 +12,7 @@ pub enum TestStatus {
     Passed,
     Failed,
     Skipped,
+    TimedOut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +109,19 @@ impl TestResult {
             name: String::new(),
             status: TestStatus::Skipped,
             message: Some(reason.into()),
+            source: None,
+            failure_location: None,
+            duration: Duration::ZERO,
+            total_duration: Duration::ZERO,
+            properties: Vec::new(),
+        }
+    }
+
+    pub(crate) fn timed_out(timeout: Duration) -> Self {
+        Self {
+            name: String::new(),
+            status: TestStatus::TimedOut,
+            message: Some(format!("test timed out after {timeout:?}")),
             source: None,
             failure_location: None,
             duration: Duration::ZERO,

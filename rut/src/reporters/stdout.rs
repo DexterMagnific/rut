@@ -104,7 +104,7 @@ impl TestReporter for StdoutReporter {
                     case.passed += 1;
                     report.total_passed += 1;
                 }
-                TestStatus::Failed => {
+                TestStatus::Failed | TestStatus::TimedOut => {
                     case.failed += 1;
                     report.total_failed += 1;
                 }
@@ -120,6 +120,7 @@ impl TestReporter for StdoutReporter {
             TestStatus::Passed => "PASS",
             TestStatus::Failed => "FAIL",
             TestStatus::Skipped => "SKIP",
+            TestStatus::TimedOut => "TIMEOUT",
             _ => "UNKNOWN",
         };
         let msg = result.message.as_deref().unwrap_or("");

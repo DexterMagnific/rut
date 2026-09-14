@@ -109,7 +109,7 @@ impl TestReporter for JUnitReporter {
                     case.passed += 1;
                     report.total_passed += 1;
                 }
-                TestStatus::Failed => {
+                TestStatus::Failed | TestStatus::TimedOut => {
                     case.failed += 1;
                     report.total_failed += 1;
                 }
@@ -247,7 +247,7 @@ fn serialize_report(report: &SuiteReport) -> ReporterResult<Vec<u8>> {
             }
 
             match test.status {
-                TestStatus::Failed => {
+                TestStatus::Failed | TestStatus::TimedOut => {
                     let message = failure_message(test);
                     let mut failure = BytesStart::new("failure");
                     failure.push_attribute(("message", message.as_str()));
