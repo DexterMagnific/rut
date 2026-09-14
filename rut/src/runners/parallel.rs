@@ -1,4 +1,3 @@
-use crate::case::TestCase;
 use crate::report::SuiteReport;
 use crate::reporter::{ReporterResult, TestReporter};
 use crate::suite::TestSuite;
@@ -11,7 +10,7 @@ use tokio::task::JoinSet;
 
 use crate::report::TestResult;
 
-type CaseData = (String, usize, Box<dyn TestCase>);
+use super::filter::{SelectedCase, select_cases};
 
 struct CompletedCase {
     name: String,
@@ -28,6 +27,8 @@ pub struct ParallelRunner {
     shuffle_test_cases: bool,
     suite: Option<Box<dyn TestSuite>>,
     reporter: Option<Box<dyn TestReporter>>,
+    filters: Vec<String>,
+    fail_fast: bool,
 }
 
 impl ParallelRunner {
@@ -37,6 +38,8 @@ impl ParallelRunner {
             shuffle_test_cases: false,
             suite: None,
             reporter: None,
+            filters: Vec::new(),
+            fail_fast: false,
         }
     }
 
@@ -46,7 +49,19 @@ impl ParallelRunner {
             shuffle_test_cases: false,
             suite: None,
             reporter: None,
+            filters: Vec::new(),
+            fail_fast: false,
         }
+    }
+
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filters.push(filter.into());
+        self
+    }
+
+    pub fn fail_fast(mut self) -> Self {
+        self.fail_fast = true;
+        self
     }
 }
 
@@ -61,6 +76,8 @@ pub struct ParallelRunnerBuilder {
     shuffle_test_cases: bool,
     suite: Option<Box<dyn TestSuite>>,
     reporter: Option<Box<dyn TestReporter>>,
+    filters: Vec<String>,
+    fail_fast: bool,
 }
 
 impl ParallelRunnerBuilder {
@@ -70,6 +87,8 @@ impl ParallelRunnerBuilder {
             shuffle_test_cases: false,
             suite: None,
             reporter: None,
+            filters: Vec::new(),
+            fail_fast: false,
         }
     }
 
@@ -83,15 +102,22 @@ impl ParallelRunnerBuilder {
         self
     }
 
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filters.push(filter.into());
+        self
+    }
+
+    pub fn fail_fast(mut self) -> Self {
+        self.fail_fast = true;
+        self
+    }
+
     pub fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self {
         self.suite = Some(suite);
         self
     }
 
-    pub fn with_reporter(
-        mut self,
-        reporter: Box<dyn TestReporter>,
-    ) -> Self {
+    pub fn with_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self {
         self.reporter = Some(reporter);
         self
     }
@@ -102,6 +128,8 @@ impl ParallelRunnerBuilder {
             shuffle_test_cases: self.shuffle_test_cases,
             suite: self.suite,
             reporter: self.reporter,
+            filters: self.filters,
+            fail_fast: self.fail_fast,
         }
     }
 }
@@ -125,172 +153,174 @@ impl crate::runner::TestRunner for ParallelRunner {
     }
 
     async fn run(self) -> ReporterResult<SuiteReport> {
-            let suite = self.suite.expect("suite required");
-            let mut reporter = self
-                .reporter
-                .unwrap_or_else(|| Box::new(crate::reporters::StdoutReporter::new()));
-            let suite_name = suite.name().to_owned();
+        let fail_fast = self.fail_fast;
+        let suite = self.suite.expect("suite required");
+        let mut reporter = self
+            .reporter
+            .unwrap_or_else(|| Box::new(crate::reporters::StdoutReporter::new()));
+        let suite_name = suite.name().to_owned();
 
-            let test_cases = suite.test_cases();
-            let test_case_infos: Vec<crate::report::TestCaseInfo> = test_cases
-                .iter()
-                .map(|c| crate::report::TestCaseInfo {
-                    name: c.name().to_string(),
-                    tests: c
-                        .tests()
-                        .iter()
-                        .map(|test| crate::report::TestInfo {
-                            name: test.name().to_string(),
-                            source: test.source_location(),
-                        })
-                        .collect(),
-                })
-                .collect::<Vec<_>>();
-
-            let suite_started_at = chrono::Utc::now();
-            reporter
-                .report_start(&suite_name, &test_case_infos, suite_started_at)
-                .await?;
-
-            // Run setup with panic catching
-            let suite_total_start = Instant::now();
-            let setup_result = tokio::task::spawn(async move {
-                let mut suite = suite;
-                suite.setup_suite().await;
-                suite
+        let selected_cases = select_cases(&suite_name, suite.test_cases(), &self.filters);
+        let test_case_infos: Vec<crate::report::TestCaseInfo> = selected_cases
+            .iter()
+            .map(|case| crate::report::TestCaseInfo {
+                name: case.name.clone(),
+                tests: case
+                    .tests
+                    .iter()
+                    .map(|test| crate::report::TestInfo {
+                        name: test.name().to_string(),
+                        source: test.source_location(),
+                    })
+                    .collect(),
             })
-            .await;
+            .collect::<Vec<_>>();
 
-            let suite = match setup_result {
-                Ok(suite) => suite,
-                Err(_) => {
+        let suite_started_at = chrono::Utc::now();
+        reporter
+            .report_start(&suite_name, &test_case_infos, suite_started_at)
+            .await?;
+
+        // Run setup with panic catching
+        let suite_total_start = Instant::now();
+        let setup_result = tokio::task::spawn(async move {
+            let mut suite = suite;
+            suite.setup_suite().await;
+            suite
+        })
+        .await;
+
+        let suite = match setup_result {
+            Ok(suite) => suite,
+            Err(_) => {
+                reporter
+                    .report_finish(
+                        Duration::ZERO,
+                        suite_total_start.elapsed(),
+                        chrono::Utc::now(),
+                    )
+                    .await?;
+                return Ok(reporter.get_report().clone());
+            }
+        };
+
+        let ctx = suite.context().cloned();
+        let suite_duration_start = Instant::now();
+
+        let mut queued: VecDeque<SelectedCase> = selected_cases.into();
+
+        if self.shuffle_test_cases {
+            shuffle_queue(queued.make_contiguous(), &mut rand::rng());
+        }
+
+        let max_jobs = self.max_jobs;
+        let mut running = JoinSet::new();
+        let mut failure_observed = false;
+
+        // Start initial batch
+        for _ in 0..max_jobs.min(queued.len()) {
+            let ctx = ctx.clone();
+            running.spawn(run_test_case(
+                queued.pop_front().expect("queued case should exist"),
+                ctx,
+            ));
+        }
+
+        // Process completions, start next in queue order
+        while let Some(res) = running.join_next().await {
+            match res {
+                Ok(Ok(payload)) => {
+                    let case_failed = payload
+                        .results
+                        .iter()
+                        .any(|result| result.status == crate::report::TestStatus::Failed);
                     reporter
-                        .report_finish(
+                        .report_case_start(&payload.name, payload.test_count, payload.started_at)
+                        .await?;
+
+                    for result in payload.results {
+                        reporter
+                            .report_test_start(&payload.name, &result.name)
+                            .await?;
+                        reporter.report_result(&payload.name, &result).await?;
+
+                        if result.status == crate::report::TestStatus::Failed {
+                            break;
+                        }
+                    }
+
+                    reporter
+                        .report_case_finish(
+                            &payload.name,
+                            payload.duration,
+                            payload.total_duration,
+                            payload.finished_at,
+                        )
+                        .await?;
+                    failure_observed |= case_failed;
+                }
+                Ok(Err(error_msg)) => {
+                    failure_observed = true;
+                    let started_at = chrono::Utc::now();
+                    reporter.report_case_start("unknown", 0, started_at).await?;
+                    reporter
+                        .report_result(
+                            "unknown",
+                            &TestResult::failed(format!("test case panicked: {}", error_msg)),
+                        )
+                        .await?;
+                    reporter
+                        .report_case_finish(
+                            "unknown",
                             Duration::ZERO,
-                            suite_total_start.elapsed(),
+                            Duration::ZERO,
                             chrono::Utc::now(),
                         )
                         .await?;
-                    return Ok(reporter.get_report().clone());
                 }
-            };
-
-            let ctx = suite.context().cloned();
-            let suite_duration_start = Instant::now();
-
-            let mut queued: VecDeque<CaseData> = test_cases
-                .into_iter()
-                .map(|case| {
-                    let test_count = case.tests().len();
-                    (case.name().to_string(), test_count, case)
-                })
-                .collect();
-
-            if self.shuffle_test_cases {
-                shuffle_queue(queued.make_contiguous(), &mut rand::rng());
+                Err(join_error) => {
+                    failure_observed = true;
+                    let join_error: tokio::task::JoinError = join_error;
+                    let started_at = chrono::Utc::now();
+                    reporter.report_case_start("unknown", 0, started_at).await?;
+                    reporter
+                        .report_result(
+                            "unknown",
+                            &TestResult::failed(format!("test case panicked: {}", join_error)),
+                        )
+                        .await?;
+                    reporter
+                        .report_case_finish(
+                            "unknown",
+                            Duration::ZERO,
+                            Duration::ZERO,
+                            chrono::Utc::now(),
+                        )
+                        .await?;
+                }
             }
 
-            let max_jobs = self.max_jobs;
-            let mut running = JoinSet::new();
-
-            // Start initial batch
-            for _ in 0..max_jobs.min(queued.len()) {
-                let (case_name, test_count, case) =
-                    queued.pop_front().expect("queued case should exist");
+            if (!fail_fast || !failure_observed)
+                && let Some(case) = queued.pop_front()
+            {
                 let ctx = ctx.clone();
-                running.spawn(run_test_case(case_name, test_count, case, ctx));
+                running.spawn(run_test_case(case, ctx));
             }
+        }
 
-            // Process completions, start next in queue order
-            while let Some(res) = running.join_next().await {
-                if let Some((case_name, test_count, case)) = queued.pop_front() {
-                    let ctx = ctx.clone();
-                    running.spawn(run_test_case(case_name, test_count, case, ctx));
-                }
+        // Run teardown with panic catching
+        let suite_duration = suite_duration_start.elapsed();
+        let _ = tokio::task::spawn(async move {
+            let mut suite = suite;
+            suite.teardown_suite().await
+        })
+        .await;
 
-                match res {
-                    Ok(Ok(payload)) => {
-                        reporter
-                            .report_case_start(
-                                &payload.name,
-                                payload.test_count,
-                                payload.started_at,
-                            )
-                            .await?;
-
-                        for result in payload.results {
-                            reporter
-                                .report_test_start(&payload.name, &result.name)
-                                .await?;
-                            reporter.report_result(&payload.name, &result).await?;
-
-                            if result.status == crate::report::TestStatus::Failed {
-                                break;
-                            }
-                        }
-
-                        reporter
-                            .report_case_finish(
-                                &payload.name,
-                                payload.duration,
-                                payload.total_duration,
-                                payload.finished_at,
-                            )
-                            .await?;
-                    }
-                    Ok(Err(error_msg)) => {
-                        let started_at = chrono::Utc::now();
-                        reporter.report_case_start("unknown", 0, started_at).await?;
-                        reporter
-                            .report_result(
-                                "unknown",
-                                &TestResult::failed(format!("test case panicked: {}", error_msg)),
-                            )
-                            .await?;
-                        reporter
-                            .report_case_finish(
-                                "unknown",
-                                Duration::ZERO,
-                                Duration::ZERO,
-                                chrono::Utc::now(),
-                            )
-                            .await?;
-                    }
-                    Err(join_error) => {
-                        let join_error: tokio::task::JoinError = join_error;
-                        let started_at = chrono::Utc::now();
-                        reporter.report_case_start("unknown", 0, started_at).await?;
-                        reporter
-                            .report_result(
-                                "unknown",
-                                &TestResult::failed(format!("test case panicked: {}", join_error)),
-                            )
-                            .await?;
-                        reporter
-                            .report_case_finish(
-                                "unknown",
-                                Duration::ZERO,
-                                Duration::ZERO,
-                                chrono::Utc::now(),
-                            )
-                            .await?;
-                    }
-                }
-            }
-
-            // Run teardown with panic catching
-            let suite_duration = suite_duration_start.elapsed();
-            let _ = tokio::task::spawn(async move {
-                let mut suite = suite;
-                suite.teardown_suite().await
-            })
-            .await;
-
-            let suite_total_duration = suite_total_start.elapsed();
-            reporter
-                .report_finish(suite_duration, suite_total_duration, chrono::Utc::now())
-                .await?;
-            Ok(reporter.get_report().clone())
+        let suite_total_duration = suite_total_start.elapsed();
+        reporter
+            .report_finish(suite_duration, suite_total_duration, chrono::Utc::now())
+            .await?;
+        Ok(reporter.get_report().clone())
     }
 }
 
@@ -299,11 +329,15 @@ fn shuffle_queue<T, R: Rng + ?Sized>(queue: &mut [T], rng: &mut R) {
 }
 
 async fn run_test_case(
-    case_name: String,
-    test_count: usize,
-    mut case: Box<dyn TestCase>,
+    selected: SelectedCase,
     ctx: Option<crate::report::TestContext>,
 ) -> Result<CompletedCase, String> {
+    let SelectedCase {
+        name: case_name,
+        mut case,
+        tests,
+    } = selected;
+    let test_count = tests.len();
     let started_at = chrono::Utc::now();
     let case_total_start = Instant::now();
     case.setup_case(ctx.as_ref()).await;
@@ -311,7 +345,7 @@ async fn run_test_case(
 
     let mut results = Vec::new();
 
-    for test in case.tests() {
+    for test in tests {
         let test_start = Instant::now();
         let mut result = match crate::panic_capture::catch_test_panic(test.run(ctx.as_ref())).await
         {

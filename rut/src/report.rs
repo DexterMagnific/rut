@@ -11,6 +11,7 @@ pub enum TestStatus {
     Running,
     Passed,
     Failed,
+    Skipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +37,7 @@ pub struct SuiteReport {
     pub test_cases: Vec<CaseReport>,
     pub total_passed: usize,
     pub total_failed: usize,
+    pub total_skipped: usize,
     pub duration: Duration,
     pub total_duration: Duration,
     pub started_at: DateTime<Utc>,
@@ -49,6 +51,7 @@ pub struct CaseReport {
     pub status: TestStatus,
     pub passed: usize,
     pub failed: usize,
+    pub skipped: usize,
     pub duration: Duration,
     pub total_duration: Duration,
     pub started_at: Option<DateTime<Utc>>,
@@ -94,6 +97,19 @@ impl TestResult {
                 caller.line(),
                 caller.column(),
             )),
+            duration: Duration::ZERO,
+            total_duration: Duration::ZERO,
+            properties: Vec::new(),
+        }
+    }
+
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        Self {
+            name: String::new(),
+            status: TestStatus::Skipped,
+            message: Some(reason.into()),
+            source: None,
+            failure_location: None,
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             properties: Vec::new(),
@@ -168,6 +184,7 @@ impl SuiteReport {
                     status: TestStatus::NotYetRun,
                     passed: 0,
                     failed: 0,
+                    skipped: 0,
                     duration: Duration::ZERO,
                     total_duration: Duration::ZERO,
                     started_at: None,
@@ -181,6 +198,7 @@ impl SuiteReport {
             test_cases: test_cases_vec,
             total_passed: 0,
             total_failed: 0,
+            total_skipped: 0,
             duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             started_at,

@@ -42,6 +42,28 @@ cargo rut run --typename CalculatorSuite
 cargo rut run path/to/suites/ --typename CalculatorSuite
 ```
 
+When a source file declares multiple suites, all of them run unless `--typename` selects one.
+
+* Run tests matching a qualified-name substring
+
+```console
+cargo rut run --filter addition
+cargo rut run --filter Calculator.addition.positive
+cargo rut run --filter addition --filter multiplication
+```
+
+Repeated filters are combined with OR. Matching uses the full `Suite.case.test` name, and tests
+that do not match are excluded from the report.
+
+* Stop admitting new cases after the first failure
+
+```console
+cargo rut run --fail-fast
+```
+
+The sequential runner stops before the next case. The parallel runner lets already-running cases
+finish but does not dispatch more queued cases.
+
 * List suites
 
 ```console
@@ -51,29 +73,29 @@ cargo rut list path/to/suites/
 
 * Save JUnit report
 
-Single suite: `--junit`
+Exactly one selected suite: `--junit`
 
 ```console
-cargo rut run path/to/suite.rs --junit target/junit/calculator.xml
-cargo rut run --typename CalculatorSuite --junit target/junit/calculator.xml
+cargo rut run path/to/suite.rs --typename CalculatorSuite --junit target/junit/calculator.xml
 ```
 
-Multiple suites: `--junit-dir`
+One or more selected suites: `--junit-dir`
 
 ```console
+cargo rut run path/to/suite.rs --junit-dir target/junit
 cargo rut run path/to/suites/ --junit-dir target/junit
 ```
 
 * Save Google Test JSON report
 
 ```console
-cargo rut run path/to/suite.rs --gtest target/gtest/calculator.json
-cargo rut run --typename CalculatorSuite --gtest target/gtest/calculator.json
+cargo rut run path/to/suite.rs --typename CalculatorSuite --gtest target/gtest/calculator.json
 ```
 
-Multiple suites: `--gtest-dir`
+One or more selected suites: `--gtest-dir`
 
 ```console
+cargo rut run path/to/suite.rs --gtest-dir target/gtest
 cargo rut run path/to/suites/ --gtest-dir target/gtest
 ```
 
@@ -144,6 +166,20 @@ suite! {
 * Suites run with `cargo rut` do not need a `main` function.
 * Returning `TestResult::failed` stops the remaining tests in that case. Other cases can still run.
 * Panics inside test bodies are converted into failed test results with captured location and backtrace.
+
+Tests can also be skipped explicitly with a reason:
+
+```rust
+test(name = "requires database") {
+    if database_is_available() {
+        TestResult::passed()
+    } else {
+        TestResult::skipped("database is unavailable")
+    }
+}
+```
+
+Skipped tests do not count as failures and retain their reason in JUnit and GoogleTest reports.
 
 ## Setup and Teardown
 
@@ -364,6 +400,7 @@ The resulting `SuiteReport` can be explored for post processing:
 println!("Suite: {}", report.suite_name);
 println!("Passed: {}", report.total_passed);
 println!("Failed: {}", report.total_failed);
+println!("Skipped: {}", report.total_skipped);
 println!("Duration: {:?}", report.duration);
 println!("Total duration: {:?}", report.total_duration);
 

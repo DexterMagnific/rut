@@ -75,11 +75,7 @@ impl TestReporter for JUnitReporter {
         Ok(())
     }
 
-    async fn report_test_start(
-        &mut self,
-        case_name: &str,
-        test_name: &str,
-    ) -> ReporterResult<()> {
+    async fn report_test_start(&mut self, case_name: &str, test_name: &str) -> ReporterResult<()> {
         if let Some(test) = self
             .report_mut()
             .test_cases
@@ -92,38 +88,38 @@ impl TestReporter for JUnitReporter {
         Ok(())
     }
 
-    async fn report_result(
-        &mut self,
-        case_name: &str,
-        result: &TestResult,
-    ) -> ReporterResult<()> {
+    async fn report_result(&mut self, case_name: &str, result: &TestResult) -> ReporterResult<()> {
         let report = self.report_mut();
-            if let Some(case) = report
-                .test_cases
-                .iter_mut()
-                .find(|case| case.name == case_name)
-                && let Some(test) = case.tests.iter_mut().find(|test| test.name == result.name)
-            {
-                test.status = result.status;
-                test.message = result.message.clone();
-                test.source = result.source.clone();
-                test.failure_location = result.failure_location.clone();
-                test.duration = result.duration;
-                test.total_duration = result.total_duration;
-                test.properties = result.properties.clone();
+        if let Some(case) = report
+            .test_cases
+            .iter_mut()
+            .find(|case| case.name == case_name)
+            && let Some(test) = case.tests.iter_mut().find(|test| test.name == result.name)
+        {
+            test.status = result.status;
+            test.message = result.message.clone();
+            test.source = result.source.clone();
+            test.failure_location = result.failure_location.clone();
+            test.duration = result.duration;
+            test.total_duration = result.total_duration;
+            test.properties = result.properties.clone();
 
-                match result.status {
-                    TestStatus::Passed => {
-                        case.passed += 1;
-                        report.total_passed += 1;
-                    }
-                    TestStatus::Failed => {
-                        case.failed += 1;
-                        report.total_failed += 1;
-                    }
-                    TestStatus::NotYetRun | TestStatus::Running => {}
+            match result.status {
+                TestStatus::Passed => {
+                    case.passed += 1;
+                    report.total_passed += 1;
                 }
+                TestStatus::Failed => {
+                    case.failed += 1;
+                    report.total_failed += 1;
+                }
+                TestStatus::Skipped => {
+                    case.skipped += 1;
+                    report.total_skipped += 1;
+                }
+                TestStatus::NotYetRun | TestStatus::Running => {}
             }
+        }
         Ok(())
     }
 
@@ -142,6 +138,8 @@ impl TestReporter for JUnitReporter {
         {
             case.status = if case.failed > 0 {
                 TestStatus::Failed
+            } else if case.passed == 0 && case.skipped > 0 {
+                TestStatus::Skipped
             } else {
                 TestStatus::Passed
             };
@@ -180,7 +178,12 @@ fn serialize_report(report: &SuiteReport) -> ReporterResult<Vec<u8>> {
         .test_cases
         .iter()
         .flat_map(|case| &case.tests)
-        .filter(|test| matches!(test.status, TestStatus::NotYetRun | TestStatus::Running))
+        .filter(|test| {
+            matches!(
+                test.status,
+                TestStatus::Skipped | TestStatus::NotYetRun | TestStatus::Running
+            )
+        })
         .count();
     let tests = tests.to_string();
     let failures = report.total_failed.to_string();
@@ -252,6 +255,13 @@ fn serialize_report(report: &SuiteReport) -> ReporterResult<Vec<u8>> {
                     write_event(&mut writer, Event::Text(BytesText::new(&message)))?;
                     write_event(&mut writer, Event::End(BytesEnd::new("failure")))?;
                 }
+                TestStatus::Skipped => {
+                    let mut skipped = BytesStart::new("skipped");
+                    if let Some(reason) = &test.message {
+                        skipped.push_attribute(("message", reason.as_str()));
+                    }
+                    write_event(&mut writer, Event::Empty(skipped))?;
+                }
                 TestStatus::NotYetRun | TestStatus::Running => {
                     write_event(&mut writer, Event::Empty(BytesStart::new("skipped")))?;
                 }
@@ -297,6 +307,28 @@ mod tests {
     use quick_xml::Reader;
     use quick_xml::events::Event;
     use tempfile::TempDir;
+
+    #[test]
+    fn writes_explicit_skip_reasons() {
+        let started_at = Utc::now();
+        let mut report = SuiteReport::new(
+            "suite",
+            &[TestCaseInfo {
+                name: "case".to_string(),
+                tests: vec![TestInfo {
+                    name: "test".to_string(),
+                    source: None,
+                }],
+            }],
+            started_at,
+        );
+        report.test_cases[0].tests[0] = TestResult::skipped("requires database");
+        report.test_cases[0].tests[0].name = "test".to_string();
+
+        let xml = String::from_utf8(serialize_report(&report).unwrap()).unwrap();
+
+        assert!(xml.contains("<skipped message=\"requires database\"/>"));
+    }
 
     #[tokio::test]
     async fn writes_valid_xml_with_failures_skips_and_test_properties() {

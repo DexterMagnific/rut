@@ -62,11 +62,7 @@ impl TestReporter for StdoutReporter {
         Ok(())
     }
 
-    async fn report_test_start(
-        &mut self,
-        case_name: &str,
-        test_name: &str,
-    ) -> ReporterResult<()> {
+    async fn report_test_start(&mut self, case_name: &str, test_name: &str) -> ReporterResult<()> {
         let source = self
             .report_mut()
             .test_cases
@@ -87,69 +83,68 @@ impl TestReporter for StdoutReporter {
         Ok(())
     }
 
-    async fn report_result(
-        &mut self,
-        case_name: &str,
-        result: &TestResult,
-    ) -> ReporterResult<()> {
+    async fn report_result(&mut self, case_name: &str, result: &TestResult) -> ReporterResult<()> {
         let report = self.report_mut();
-            if let Some(case) = report
-                .test_cases
-                .iter_mut()
-                .find(|case| case.name == case_name)
-                && let Some(test) = case.tests.iter_mut().find(|test| test.name == result.name)
-            {
-                test.status = result.status;
-                test.message = result.message.clone();
-                test.source = result.source.clone();
-                test.failure_location = result.failure_location.clone();
-                test.duration = result.duration;
-                test.total_duration = result.total_duration;
-                test.properties = result.properties.clone();
+        if let Some(case) = report
+            .test_cases
+            .iter_mut()
+            .find(|case| case.name == case_name)
+            && let Some(test) = case.tests.iter_mut().find(|test| test.name == result.name)
+        {
+            test.status = result.status;
+            test.message = result.message.clone();
+            test.source = result.source.clone();
+            test.failure_location = result.failure_location.clone();
+            test.duration = result.duration;
+            test.total_duration = result.total_duration;
+            test.properties = result.properties.clone();
 
-                match result.status {
-                    TestStatus::Passed => {
-                        case.passed += 1;
-                        report.total_passed += 1;
-                    }
-                    TestStatus::Failed => {
-                        case.failed += 1;
-                        report.total_failed += 1;
-                    }
-                    TestStatus::NotYetRun | TestStatus::Running => {}
+            match result.status {
+                TestStatus::Passed => {
+                    case.passed += 1;
+                    report.total_passed += 1;
                 }
-            }
-
-            let status = match result.status {
-                TestStatus::Passed => "PASS",
-                TestStatus::Failed => "FAIL",
-                _ => "UNKNOWN",
-            };
-            let msg = result.message.as_deref().unwrap_or("");
-            let failure_location = result
-                .failure_location
-                .as_ref()
-                .map(|location| {
-                    format!("{}:{}:{}: ", location.file, location.line, location.column)
-                })
-                .unwrap_or_default();
-            println!(
-                "    {} {} (duration: {:.2?}, total duration: {:.2?}){}",
-                status,
-                result.name,
-                result.duration,
-                result.total_duration,
-                if msg.is_empty() {
-                    String::new()
-                } else {
-                    format!(" - {failure_location}{msg}")
+                TestStatus::Failed => {
+                    case.failed += 1;
+                    report.total_failed += 1;
                 }
-            );
-
-            // Print properties
-            for (key, value) in &result.properties {
-                println!("      Property: {} = {}", key, value);
+                TestStatus::Skipped => {
+                    case.skipped += 1;
+                    report.total_skipped += 1;
+                }
+                TestStatus::NotYetRun | TestStatus::Running => {}
             }
+        }
+
+        let status = match result.status {
+            TestStatus::Passed => "PASS",
+            TestStatus::Failed => "FAIL",
+            TestStatus::Skipped => "SKIP",
+            _ => "UNKNOWN",
+        };
+        let msg = result.message.as_deref().unwrap_or("");
+        let failure_location = result
+            .failure_location
+            .as_ref()
+            .map(|location| format!("{}:{}:{}: ", location.file, location.line, location.column))
+            .unwrap_or_default();
+        println!(
+            "    {} {} (duration: {:.2?}, total duration: {:.2?}){}",
+            status,
+            result.name,
+            result.duration,
+            result.total_duration,
+            if msg.is_empty() {
+                String::new()
+            } else {
+                format!(" - {failure_location}{msg}")
+            }
+        );
+
+        // Print properties
+        for (key, value) in &result.properties {
+            println!("      Property: {} = {}", key, value);
+        }
         Ok(())
     }
 
@@ -168,6 +163,8 @@ impl TestReporter for StdoutReporter {
         {
             case.status = if case.failed > 0 {
                 TestStatus::Failed
+            } else if case.passed == 0 && case.skipped > 0 {
+                TestStatus::Skipped
             } else {
                 TestStatus::Passed
             };
@@ -193,8 +190,12 @@ impl TestReporter for StdoutReporter {
         report.duration = duration;
         report.total_duration = total_duration;
         println!(
-            "\nTest run completed: {} passed, {} failed (duration: {:.2?}, total duration: {:.2?})",
-            report.total_passed, report.total_failed, report.duration, report.total_duration
+            "\nTest run completed: {} passed, {} failed, {} skipped (duration: {:.2?}, total duration: {:.2?})",
+            report.total_passed,
+            report.total_failed,
+            report.total_skipped,
+            report.duration,
+            report.total_duration
         );
         Ok(())
     }

@@ -80,11 +80,7 @@ impl TestReporter for GTestReporter {
         Ok(())
     }
 
-    async fn report_test_start(
-        &mut self,
-        case_name: &str,
-        test_name: &str,
-    ) -> ReporterResult<()> {
+    async fn report_test_start(&mut self, case_name: &str, test_name: &str) -> ReporterResult<()> {
         if let Some(test) = self
             .report_mut()
             .test_cases
@@ -97,38 +93,38 @@ impl TestReporter for GTestReporter {
         Ok(())
     }
 
-    async fn report_result(
-        &mut self,
-        case_name: &str,
-        result: &TestResult,
-    ) -> ReporterResult<()> {
+    async fn report_result(&mut self, case_name: &str, result: &TestResult) -> ReporterResult<()> {
         let report = self.report_mut();
-            if let Some(case) = report
-                .test_cases
-                .iter_mut()
-                .find(|case| case.name == case_name)
-                && let Some(test) = case.tests.iter_mut().find(|test| test.name == result.name)
-            {
-                test.status = result.status;
-                test.message = result.message.clone();
-                test.source = result.source.clone();
-                test.failure_location = result.failure_location.clone();
-                test.duration = result.duration;
-                test.total_duration = result.total_duration;
-                test.properties = result.properties.clone();
+        if let Some(case) = report
+            .test_cases
+            .iter_mut()
+            .find(|case| case.name == case_name)
+            && let Some(test) = case.tests.iter_mut().find(|test| test.name == result.name)
+        {
+            test.status = result.status;
+            test.message = result.message.clone();
+            test.source = result.source.clone();
+            test.failure_location = result.failure_location.clone();
+            test.duration = result.duration;
+            test.total_duration = result.total_duration;
+            test.properties = result.properties.clone();
 
-                match result.status {
-                    TestStatus::Passed => {
-                        case.passed += 1;
-                        report.total_passed += 1;
-                    }
-                    TestStatus::Failed => {
-                        case.failed += 1;
-                        report.total_failed += 1;
-                    }
-                    TestStatus::NotYetRun | TestStatus::Running => {}
+            match result.status {
+                TestStatus::Passed => {
+                    case.passed += 1;
+                    report.total_passed += 1;
                 }
+                TestStatus::Failed => {
+                    case.failed += 1;
+                    report.total_failed += 1;
+                }
+                TestStatus::Skipped => {
+                    case.skipped += 1;
+                    report.total_skipped += 1;
+                }
+                TestStatus::NotYetRun | TestStatus::Running => {}
             }
+        }
         Ok(())
     }
 
@@ -147,6 +143,8 @@ impl TestReporter for GTestReporter {
         {
             case.status = if case.failed > 0 {
                 TestStatus::Failed
+            } else if case.passed == 0 && case.skipped > 0 {
+                TestStatus::Skipped
             } else {
                 TestStatus::Passed
             };
@@ -252,11 +250,12 @@ struct GTestTest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     failures: Option<Vec<GTestFailure>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    skipped: Option<Vec<GTestSkipped>>,
+    skipped: Option<Vec<GTestSkipped<'a>>>,
 }
 
 impl<'a> GTestTest<'a> {
     fn new(test: &'a TestResult, classname: &'a str) -> Self {
+        let skipped = test.status == TestStatus::Skipped;
         let unfinished = matches!(test.status, TestStatus::NotYetRun | TestStatus::Running);
         let properties = test
             .properties
@@ -269,16 +268,23 @@ impl<'a> GTestTest<'a> {
                 failure_type: "",
             }]
         });
-        let skipped = unfinished.then(|| {
+        let skipped = (skipped || unfinished).then(|| {
             vec![GTestSkipped {
-                message: "test did not run to completion",
+                message: test
+                    .message
+                    .as_deref()
+                    .unwrap_or("test did not run to completion"),
             }]
         });
 
         Self {
             name: &test.name,
             status: "RUN",
-            result: if unfinished { "SKIPPED" } else { "COMPLETED" },
+            result: if skipped.is_some() {
+                "SKIPPED"
+            } else {
+                "COMPLETED"
+            },
             time: duration(test.total_duration),
             classname,
             file: test.source.as_ref().map(|source| source.file.as_str()),
@@ -312,8 +318,8 @@ fn failure_message(test: &TestResult) -> String {
 }
 
 #[derive(Serialize)]
-struct GTestSkipped {
-    message: &'static str,
+struct GTestSkipped<'a> {
+    message: &'a str,
 }
 
 fn timestamp(value: DateTime<Utc>) -> String {
@@ -343,6 +349,17 @@ mod tests {
         DateTime::parse_from_rfc3339(value)
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn writes_explicit_skip_reasons() {
+        let mut result = TestResult::skipped("requires database");
+        result.name = "test".to_string();
+
+        let test = serde_json::to_value(GTestTest::new(&result, "case")).unwrap();
+
+        assert_eq!(test["result"], "SKIPPED");
+        assert_eq!(test["skipped"][0]["message"], "requires database");
     }
 
     #[tokio::test]

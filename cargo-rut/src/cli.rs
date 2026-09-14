@@ -46,6 +46,14 @@ pub struct RunArgs {
     #[arg(long)]
     pub shuffle: bool,
 
+    /// Run tests whose qualified suite.case.test name contains this value
+    #[arg(long, value_name = "PATTERN")]
+    pub filter: Vec<String>,
+
+    /// Stop admitting new test cases after the first failure
+    #[arg(long)]
+    pub fail_fast: bool,
+
     /// Write JUnit XML for a single selected suite
     #[arg(long, value_name = "FILE", conflicts_with = "junit_dir")]
     pub junit: Option<PathBuf>,
@@ -90,6 +98,8 @@ mod tests {
         assert!(matches!(args.runner, RunnerType::Parallel));
         assert_eq!(args.jobs, None);
         assert!(!args.shuffle);
+        assert!(args.filter.is_empty());
+        assert!(!args.fail_fast);
         assert_eq!(args.junit, None);
         assert_eq!(args.junit_dir, None);
         assert_eq!(args.gtest, None);
@@ -117,6 +127,11 @@ mod tests {
             "--jobs",
             "2",
             "--shuffle",
+            "--filter",
+            "addition",
+            "--filter",
+            "edge case",
+            "--fail-fast",
         ]);
 
         assert_eq!(args.path, Some(PathBuf::from("tests")));
@@ -124,6 +139,8 @@ mod tests {
         assert!(matches!(args.runner, RunnerType::Sequential));
         assert_eq!(args.jobs, Some(2));
         assert!(args.shuffle);
+        assert_eq!(args.filter, ["addition", "edge case"]);
+        assert!(args.fail_fast);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod filter;
 pub mod parallel;
 pub mod sequential;
 

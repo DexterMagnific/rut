@@ -208,22 +208,14 @@ impl TestReporter for MultiReporter {
         Ok(())
     }
 
-    async fn report_test_start(
-        &mut self,
-        case_name: &str,
-        test_name: &str,
-    ) -> ReporterResult<()> {
+    async fn report_test_start(&mut self, case_name: &str, test_name: &str) -> ReporterResult<()> {
         for reporter in &mut self.reporters {
             reporter.report_test_start(case_name, test_name).await?;
         }
         Ok(())
     }
 
-    async fn report_result(
-        &mut self,
-        case_name: &str,
-        result: &TestResult,
-    ) -> ReporterResult<()> {
+    async fn report_result(&mut self, case_name: &str, result: &TestResult) -> ReporterResult<()> {
         for reporter in &mut self.reporters {
             reporter.report_result(case_name, result).await?;
         }
@@ -368,14 +360,10 @@ mod tests {
         TestReporter::report_start(&mut reporter, "suite", &[], started_at)
             .await
             .unwrap();
-        let error = TestReporter::report_finish(
-            &mut reporter,
-            Duration::ZERO,
-            Duration::ZERO,
-            finished_at,
-        )
-            .await
-            .unwrap_err();
+        let error =
+            TestReporter::report_finish(&mut reporter, Duration::ZERO, Duration::ZERO, finished_at)
+                .await
+                .unwrap_err();
 
         assert!(
             error
@@ -404,14 +392,10 @@ mod tests {
         TestReporter::report_start(&mut reporter, "suite", &[], started_at)
             .await
             .unwrap();
-        let error = TestReporter::report_finish(
-            &mut reporter,
-            Duration::ZERO,
-            Duration::ZERO,
-            finished_at,
-        )
-            .await
-            .unwrap_err();
+        let error =
+            TestReporter::report_finish(&mut reporter, Duration::ZERO, Duration::ZERO, finished_at)
+                .await
+                .unwrap_err();
 
         assert!(
             error
@@ -433,14 +417,10 @@ mod tests {
             .await
             .unwrap();
 
-        let error = TestReporter::report_finish(
-            &mut reporter,
-            Duration::ZERO,
-            Duration::ZERO,
-            started_at,
-        )
-            .await
-            .unwrap_err();
+        let error =
+            TestReporter::report_finish(&mut reporter, Duration::ZERO, Duration::ZERO, started_at)
+                .await
+                .unwrap_err();
 
         assert!(error.downcast_ref::<CustomReporterError>().is_some());
         assert_eq!(error.to_string(), "custom reporter failed");

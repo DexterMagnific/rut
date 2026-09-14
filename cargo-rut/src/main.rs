@@ -8,7 +8,7 @@ mod wrapper;
 use crate::cli::{Cli, Commands, ListArgs, RunArgs};
 use crate::discovery::{DiscoveredSuiteFile, discover_suites};
 use crate::error::{Result, RutError};
-use crate::wrapper::generate_wrapper;
+use crate::wrapper::{WrapperOptions, generate_wrapper};
 use clap::Parser;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -105,11 +105,13 @@ fn create_execution_targets(
 
     Ok(discovered
         .iter()
-        .map(|suite_file| ExecutionTarget {
-            suite_file: suite_file.path.clone(),
-            typename: suite_file.suites[0].typename.clone(),
-            junit_path: None,
-            gtest_path: None,
+        .flat_map(|suite_file| {
+            suite_file.suites.iter().map(|suite| ExecutionTarget {
+                suite_file: suite_file.path.clone(),
+                typename: suite.typename.clone(),
+                junit_path: None,
+                gtest_path: None,
+            })
         })
         .collect())
 }
@@ -285,11 +287,15 @@ fn run_suite_file(
     let wrapper = generate_wrapper(
         suite_file,
         typename,
-        args.runner.clone(),
-        args.jobs,
-        args.shuffle,
-        junit_path,
-        gtest_path,
+        WrapperOptions {
+            runner: args.runner.clone(),
+            jobs: args.jobs,
+            shuffle: args.shuffle,
+            filters: &args.filter,
+            fail_fast: args.fail_fast,
+            junit_path,
+            gtest_path,
+        },
     );
 
     let status = build::run_temp_project(suite_file, typename, wrapper)?;
@@ -333,6 +339,8 @@ mod tests {
             runner: RunnerType::Parallel,
             jobs: None,
             shuffle: false,
+            filter: Vec::new(),
+            fail_fast: false,
             junit: None,
             junit_dir: None,
             gtest: None,
@@ -407,6 +415,22 @@ suite! {
         let selected = select_suite_file(&discovered, "SelectedSuite", project.path()).unwrap();
 
         assert_eq!(selected.path, suite_file);
+    }
+
+    #[test]
+    fn creates_a_target_for_every_suite_in_a_file() {
+        let project = TempDir::new().unwrap();
+        let suite_file =
+            write_suite_file(project.path(), "multi.rs", &["FirstSuite", "SecondSuite"]);
+        let discovered = discover_suites(Some(suite_file.clone())).unwrap();
+
+        let targets = create_execution_targets(&discovered, None, project.path()).unwrap();
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].suite_file, suite_file);
+        assert_eq!(targets[0].typename, "FirstSuite");
+        assert_eq!(targets[1].suite_file, suite_file);
+        assert_eq!(targets[1].typename, "SecondSuite");
     }
 
     #[test]
