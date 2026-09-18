@@ -73,18 +73,23 @@ cargo rut list path/to/suites/
 
 * Save JUnit report
 
-Exactly one selected suite: `--junit`
+Reporters are selected with `--reporters`, or implicitly by passing one of their output options.
+
+A single file with `--junit`:
 
 ```console
 cargo rut run path/to/suite.rs --typename CalculatorSuite --junit target/junit/calculator.xml
 ```
 
-One or more selected suites: `--junit-dir`
+One predictable file per selected suite with `--junit-dir`:
 
 ```console
 cargo rut run path/to/suite.rs --junit-dir target/junit
 cargo rut run path/to/suites/ --junit-dir target/junit
 ```
+
+Every selected suite writes to the same file when `--junit` is used with more than one suite, so
+prefer `--junit-dir` in that case.
 
 * Save Google Test JSON report
 
@@ -106,6 +111,20 @@ cargo rut run path/to/suites/ --junit-dir target/junit --gtest-dir target/gtest
 ```
 
 Directory reports mirror the source path.
+
+* Choose reporters explicitly
+
+```console
+cargo rut run path/to/suite.rs --reporters=stdout,junit --junit-dir target/junit
+```
+
+Without `--reporters`, `stdout` is used, plus every reporter whose output option was given.
+
+* See every available option, including the ones contributed by plugins
+
+```console
+cargo rut run path/to/suite.rs --help
+```
 
 ## Suites, Cases and Tests
 
@@ -475,7 +494,6 @@ let report = ParallelRunner::default()
 ```
 
 The built-in `MultiReporter` forwards runner events in order and returns the first reporter's completed report.
-
 ```rust
 use rut::{
     GTestReporter, JUnitReporter, MultiReporter, ParallelRunner, StdoutReporter,
@@ -531,5 +549,198 @@ for case in &report.test_cases {
     }
 }
 ```
+
+## Custom Runners and Reporters
+
+Runners and reporters are ordinary traits, so you can write your own and use them from a `main`
+function without involving `cargo rut`.
+
+A **runner** implements `TestRunner`. The example below wraps `SequentialRunner` and announces how
+many passes it was asked to make:
+
+```rust
+use rut::{ReporterResult, SequentialRunner, SuiteReport, TestReporter, TestRunner, TestSuite};
+
+pub struct RepeatRunner(SequentialRunner);
+
+impl RepeatRunner {
+    pub fn new(passes: usize) -> Self {
+        println!("repeat runner: {passes} pass(es)");
+        Self(SequentialRunner::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl TestRunner for RepeatRunner {
+    fn set_suite(&mut self, suite: Box<dyn TestSuite>) {
+        self.0.set_suite(suite);
+    }
+
+    fn set_reporter(&mut self, reporter: Box<dyn TestReporter>) {
+        self.0.set_reporter(reporter);
+    }
+
+    async fn run(self) -> ReporterResult<SuiteReport> {
+        self.0.run().await
+    }
+}
+```
+
+`with_suite` and `with_reporter` come with the trait, so a custom runner is used exactly like a
+built-in one:
+
+```rust
+let report = RepeatRunner::new(2)
+    .with_suite(Box::new(CalculatorSuite::new()))
+    .with_reporter(Box::new(StdoutReporter::new()))
+    .run()
+    .await?;
+```
+
+A **reporter** implements `TestReporter`. It receives the lifecycle events and owns the
+`SuiteReport` it builds:
+
+```rust
+use rut::{ReporterResult, SuiteReport, TestReporter, TestResult, TestStatus};
+use std::time::Duration;
+
+pub struct SummaryReporter {
+    report: SuiteReport,
+    label: String,
+}
+
+#[async_trait::async_trait]
+impl TestReporter for SummaryReporter {
+    async fn report_start(
+        &mut self,
+        suite_name: &str,
+        _test_cases: &[rut::TestCaseInfo],
+        _started_at: chrono::DateTime<chrono::Utc>,
+    ) -> ReporterResult<()> {
+        self.report.suite_name = suite_name.to_string();
+        Ok(())
+    }
+
+    async fn report_result(&mut self, _case: &str, result: &TestResult) -> ReporterResult<()> {
+        match result.status {
+            TestStatus::Passed => self.report.total_passed += 1,
+            TestStatus::Skipped => self.report.total_skipped += 1,
+            _ => self.report.total_failed += 1,
+        }
+        Ok(())
+    }
+
+    async fn report_finish(
+        &mut self,
+        _duration: Duration,
+        _total_duration: Duration,
+        _finished_at: chrono::DateTime<chrono::Utc>,
+    ) -> ReporterResult<()> {
+        println!("{}: {} passed", self.label, self.report.total_passed);
+        Ok(())
+    }
+
+    fn get_report(&self) -> &SuiteReport {
+        &self.report
+    }
+
+    // report_case_start, report_test_start and report_case_finish are also
+    // required; this reporter ignores them and returns Ok(()).
+}
+```
+
+Pass it to any runner with `with_reporter`, or combine it with others through `MultiReporter`.
+
+## Runners and Reporters as Plugins
+
+A custom runner or reporter becomes usable from `cargo rut` by declaring the command line options
+it accepts. `cargo rut` asks every runner and reporter for its options, merges them into one command
+line, and forwards the arguments to your test binary, so a plugin's options show up in
+`cargo rut run --help` without any change to `cargo rut` itself.
+
+Take the `RepeatRunner` above and declare its name and its `--repeat-count` option:
+
+```rust
+use rut::cli::{ArgSpec, CoreArgs, PluginArgs, RunnerPlugin};
+
+impl RunnerPlugin for RepeatRunner {
+    // Selected with `--runner repeat`
+    const NAME: &'static str = "repeat";
+    const ABOUT: &'static str = "Runs the suite sequentially, announcing a repeat count";
+
+    fn args() -> Vec<ArgSpec> {
+        vec![ArgSpec::value("repeat-count").value_name("N").default("1")]
+    }
+
+    fn from_args(args: &PluginArgs<'_>, core: &CoreArgs) -> anyhow::Result<Self> {
+        let mut runner = RepeatRunner::new(args.parsed("repeat-count")?.unwrap_or(1));
+        runner.apply(core);
+        Ok(runner)
+    }
+}
+```
+
+`from_args` builds the runner from its own options plus `CoreArgs`, which carries the
+runner-agnostic `--filter` and `--fail-fast` values.
+
+`ReporterPlugin` mirrors it, except that `from_args` receives a `SuiteContext` describing the suite
+being run. Reporters that write files use it to derive their output path, and `is_active` lets a
+reporter run as soon as its own option is given, without naming it in `--reporters`:
+
+```rust
+use rut::cli::{ArgSpec, PluginArgs, ReporterPlugin, SuiteContext};
+
+impl ReporterPlugin for SummaryReporter {
+    // Selected with `--reporters summary`
+    const NAME: &'static str = "summary";
+    const ABOUT: &'static str = "Prints a single summary line";
+
+    fn args() -> Vec<ArgSpec> {
+        vec![ArgSpec::value("summary-label").value_name("TEXT").default("summary")]
+    }
+
+    fn from_args(args: &PluginArgs<'_>, _suite: &SuiteContext) -> anyhow::Result<Self> {
+        Ok(SummaryReporter::new(args.value("summary-label").unwrap_or("summary")))
+    }
+}
+```
+
+Finally, list what the crate exports:
+
+```rust
+rut::export_plugins! {
+    runners: [RepeatRunner],
+    reporters: [SummaryReporter],
+}
+```
+
+Point `cargo rut` at the crate and the new options are available:
+
+```console
+cargo rut run path/to/suite.rs --plugin-crate path/to/plugins --runner repeat --repeat-count 2
+cargo rut run path/to/suite.rs --plugins-dir path/to/plugin-crates
+```
+
+`--plugin-crate` takes one crate directory, `--plugins-dir` a directory whose child crates are all
+registered. Both are repeatable.
+
+The plugins and the suites that use them may live in the same crate; point `--plugin-crate` at the
+crate that owns the suite file:
+
+```console
+cargo rut run suites/colocated.rs --plugin-crate . --runner repeat
+```
+
+Two requirements for a plugin crate: it must declare `rut = { ..., features = ["cli"] }`, and
+`rut::export_plugins!` must be invoked at its root.
+[`rut/tests/fixtures/plugin`](rut/tests/fixtures/plugin) is a complete example that also holds a
+suite.
+
+Option names must not collide: the run stops with an error when two plugins declare the same option,
+or when a plugin redeclares `--runner`, `--reporters`, `--filter`, or `--fail-fast`.
+
+`--typename`, `--plugin-crate`, and `--plugins-dir` are the only options `cargo rut run` consumes
+itself; everything else is forwarded. Use `--` when a forwarded option shares a name with one of
+those three.
 
 More complete examples are available in [`rut/examples/declarative.rs`](rut/examples/declarative.rs), [`rut/examples/sequential.rs`](rut/examples/sequential.rs), and [`rut/examples/parallel.rs`](rut/examples/parallel.rs).

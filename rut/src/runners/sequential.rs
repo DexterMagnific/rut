@@ -31,10 +31,20 @@ impl SequentialRunner {
         self
     }
 
+    /// Adds a qualified-name substring filter in place.
+    pub fn add_filter(&mut self, filter: impl Into<String>) {
+        self.filters.push(filter.into());
+    }
+
     /// Stops admitting cases after the first failed case.
     pub fn fail_fast(mut self) -> Self {
         self.fail_fast = true;
         self
+    }
+
+    /// Enables or disables fail-fast in place.
+    pub fn set_fail_fast(&mut self, fail_fast: bool) {
+        self.fail_fast = fail_fast;
     }
 }
 
@@ -44,16 +54,32 @@ impl Default for SequentialRunner {
     }
 }
 
+#[cfg(feature = "cli")]
+impl crate::cli::RunnerPlugin for SequentialRunner {
+    const NAME: &'static str = "sequential";
+    const ABOUT: &'static str = "Runs test cases one at a time in declaration order";
+
+    fn from_args(
+        _args: &crate::cli::PluginArgs<'_>,
+        core: &crate::cli::CoreArgs,
+    ) -> anyhow::Result<Self> {
+        let mut runner = SequentialRunner::new();
+        for filter in &core.filters {
+            runner.add_filter(filter.clone());
+        }
+        runner.set_fail_fast(core.fail_fast);
+        Ok(runner)
+    }
+}
+
 #[async_trait]
 impl crate::runner::TestRunner for SequentialRunner {
-    fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self {
+    fn set_suite(&mut self, suite: Box<dyn TestSuite>) {
         self.suite = Some(suite);
-        self
     }
 
-    fn with_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self {
+    fn set_reporter(&mut self, reporter: Box<dyn TestReporter>) {
         self.reporter = Some(reporter);
-        self
     }
 
     async fn run(self) -> ReporterResult<SuiteReport> {

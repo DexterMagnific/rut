@@ -1,7 +1,7 @@
 use crate::report::SuiteReport;
 use crate::reporter::{ReporterResult, TestReporter};
 use crate::suite::TestSuite;
-use crate::{SourceLocation, Test, TestContext, TestResult};
+use crate::{BoxFuture, SourceLocation, Test, TestContext, TestResult};
 use async_trait::async_trait;
 use std::future::Future;
 
@@ -87,21 +87,66 @@ pub async fn run_test_with_retries(
 /// Executes a suite and delivers lifecycle events to a reporter.
 ///
 /// Configure an implementation with [`with_suite`](Self::with_suite) and
-/// [`with_reporter`](Self::with_reporter), then call [`run`](Self::run).
-/// [`crate::SequentialRunner`] and [`crate::ParallelRunner`] provide the
-/// built-in execution strategies; implement this trait when integrating a
-/// different scheduling policy.
+/// [`with_reporter`](Self::with_reporter), or their `set_*` counterparts, then
+/// call [`run`](Self::run). [`crate::SequentialRunner`] and
+/// [`crate::ParallelRunner`] provide the built-in execution strategies;
+/// implement this trait when integrating a different scheduling policy.
 pub trait TestRunner: Send + Sync {
-    fn with_suite(self, suite: Box<dyn TestSuite>) -> Self
-    where
-        Self: Sized;
-    fn with_reporter(self, reporter: Box<dyn TestReporter>) -> Self
-    where
-        Self: Sized;
+    fn set_suite(&mut self, suite: Box<dyn TestSuite>);
+    fn set_reporter(&mut self, reporter: Box<dyn TestReporter>);
     async fn run(self) -> ReporterResult<SuiteReport>
     where
         Self: Sized;
+
+    /// Supplies the suite to execute.
+    fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self
+    where
+        Self: Sized,
+    {
+        self.set_suite(suite);
+        self
+    }
+
+    /// Supplies the reporter that receives execution events.
+    fn with_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self
+    where
+        Self: Sized,
+    {
+        self.set_reporter(reporter);
+        self
+    }
 }
+
+/// Object-safe mirror of [`TestRunner`].
+///
+/// A blanket implementation bridges every [`TestRunner`], so runners can be
+/// stored and executed as `Box<dyn TestRunnerInternal>`. This is what the
+/// plugin registry hands back when a runner is selected on the command line.
+pub trait TestRunnerInternal: Send + Sync {
+    fn set_suite(&mut self, suite: Box<dyn TestSuite>);
+    fn set_reporter(&mut self, reporter: Box<dyn TestReporter>);
+    fn run_boxed(self: Box<Self>) -> BoxFuture<'static, ReporterResult<SuiteReport>>;
+}
+
+impl<T> TestRunnerInternal for T
+where
+    T: TestRunner + 'static,
+{
+    fn set_suite(&mut self, suite: Box<dyn TestSuite>) {
+        TestRunner::set_suite(self, suite);
+    }
+
+    fn set_reporter(&mut self, reporter: Box<dyn TestReporter>) {
+        TestRunner::set_reporter(self, reporter);
+    }
+
+    fn run_boxed(self: Box<Self>) -> BoxFuture<'static, ReporterResult<SuiteReport>> {
+        Box::pin(async move { TestRunner::run(*self).await })
+    }
+}
+
+/// A runner stored as a trait object, as produced by a runner plugin.
+pub type BoxedRunner = Box<dyn TestRunnerInternal>;
 
 // Re-export runners from the crate-level runners module
 pub use crate::runners::{ParallelRunner, ParallelRunnerBuilder, SequentialRunner};

@@ -3,22 +3,21 @@ mod cli;
 mod discovery;
 mod error;
 mod parser;
+mod plugins;
 mod wrapper;
 
-use crate::cli::{Cli, Commands, ListArgs, RunArgs};
+use crate::cli::{Cli, Commands, ListArgs, RUN_HELP, RunArgs};
 use crate::discovery::{DiscoveredSuiteFile, discover_suites};
 use crate::error::{Result, RutError};
+use crate::plugins::PluginCrate;
 use crate::wrapper::{WrapperOptions, generate_wrapper};
 use clap::Parser;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 struct ExecutionTarget {
     suite_file: PathBuf,
     typename: String,
-    junit_path: Option<PathBuf>,
-    gtest_path: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -26,8 +25,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse_from(&args[1..]);
 
     let exit_code = match cli.command {
-        Commands::Run(args) => run_command(args)?,
-        Commands::List(args) => list_command(args)?,
+        Commands::Run { args } => run_command(RunArgs::parse(&args)?)?,        Commands::List(args) => list_command(args)?,
     };
 
     std::process::exit(exit_code);
@@ -71,18 +69,33 @@ fn pluralize(count: usize, singular: &'static str, plural: &'static str) -> &'st
 }
 
 fn run_command(args: RunArgs) -> Result<i32> {
-    let discovered = discover_suites(args.path.clone())?;
+    if args.help {
+        print!("{RUN_HELP}");
+    }
+
+    let plugin_crates = plugins::resolve(&args.plugin_crates, &args.plugin_dirs)?;
+    let discovered = match discover_suites(args.path.clone()) {
+        Ok(discovered) => discovered,
+        // Without a suite there is no harness help to append to the driver help.
+        Err(_) if args.help => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
     let scope = args.path.as_deref().unwrap_or_else(|| Path::new("."));
-    let mut targets = create_execution_targets(&discovered, args.typename.as_deref(), scope)?;
-    resolve_report_outputs(&mut targets, &args)?;
+    let targets = create_execution_targets(&discovered, args.typename.as_deref(), scope)?;
+
+    // Harness help is identical for every suite, so one target is enough.
+    if args.help {
+        return match targets.first() {
+            Some(target) => {
+                run_suite_file(target, &plugin_crates, &args)?;
+                Ok(0)
+            }
+            None => Ok(0),
+        };
+    }
+
     let succeeded = run_execution_targets(&targets, |target| {
-        run_suite_file(
-            &target.suite_file,
-            &target.typename,
-            target.junit_path.as_deref(),
-            target.gtest_path.as_deref(),
-            &args,
-        )
+        run_suite_file(target, &plugin_crates, &args)
     });
 
     Ok(if succeeded { 0 } else { 1 })
@@ -98,8 +111,6 @@ fn create_execution_targets(
         return Ok(vec![ExecutionTarget {
             suite_file: suite_file.path.clone(),
             typename: typename.to_string(),
-            junit_path: None,
-            gtest_path: None,
         }]);
     }
 
@@ -109,135 +120,40 @@ fn create_execution_targets(
             suite_file.suites.iter().map(|suite| ExecutionTarget {
                 suite_file: suite_file.path.clone(),
                 typename: suite.typename.clone(),
-                junit_path: None,
-                gtest_path: None,
             })
         })
         .collect())
 }
 
-fn resolve_report_outputs(targets: &mut [ExecutionTarget], args: &RunArgs) -> Result<()> {
-    resolve_output_format(
-        targets,
-        args,
-        args.junit.as_deref(),
-        args.junit_dir.as_deref(),
-        "junit",
-        "xml",
-        |target| &mut target.junit_path,
-    )?;
-    resolve_output_format(
-        targets,
-        args,
-        args.gtest.as_deref(),
-        args.gtest_dir.as_deref(),
-        "gtest",
-        "json",
-        |target| &mut target.gtest_path,
-    )
-}
+/// Describes the suite to the harness so reporters can derive their own paths.
+fn suite_environment(target: &ExecutionTarget, scope: Option<&Path>) -> Vec<(String, String)> {
+    let source = std::fs::canonicalize(&target.suite_file)
+        .unwrap_or_else(|_| target.suite_file.to_path_buf());
+    let scope_root = match scope {
+        Some(path) if path.is_file() => None,
+        Some(path) => std::fs::canonicalize(path).ok(),
+        None => std::env::current_dir().ok(),
+    };
+    let relative_dir = scope_root
+        .as_deref()
+        .and_then(|root| source.parent()?.strip_prefix(root).ok())
+        .unwrap_or_else(|| Path::new(""));
 
-fn resolve_output_format(
-    targets: &mut [ExecutionTarget],
-    args: &RunArgs,
-    file: Option<&Path>,
-    output_directory: Option<&Path>,
-    flag: &str,
-    extension: &str,
-    output: fn(&mut ExecutionTarget) -> &mut Option<PathBuf>,
-) -> Result<()> {
-    if let Some(path) = file {
-        if targets.len() != 1 {
-            return Err(RutError::ReportOutput(format!(
-                "--{flag} requires exactly one selected suite, but {} were selected; use --{flag}-dir for multiple suites",
-                targets.len(),
-            ))
-            .into());
-        }
-        let path = absolute_path(path)?;
-        create_report_parent(&path)?;
-        *output(&mut targets[0]) = Some(path);
-    } else if let Some(directory) = output_directory {
-        let directory = absolute_path(directory)?;
-        let scope_root = match args.path.as_deref() {
-            Some(path) if path.is_file() => None,
-            Some(path) => Some(std::fs::canonicalize(path).map_err(|error| {
-                RutError::ReportOutput(format!(
-                    "failed to resolve report source scope {}: {error}",
-                    path.display()
-                ))
-            })?),
-            None => Some(std::env::current_dir().map_err(|error| {
-                RutError::ReportOutput(format!("failed to resolve current directory: {error}"))
-            })?),
-        };
-
-        let mut destinations = HashMap::<PathBuf, Vec<String>>::new();
-        for target in targets.iter_mut() {
-            let source = std::fs::canonicalize(&target.suite_file).map_err(|error| {
-                RutError::ReportOutput(format!(
-                    "failed to resolve suite source {}: {error}",
-                    target.suite_file.display()
-                ))
-            })?;
-            let relative_parent = scope_root
-                .as_deref()
-                .and_then(|root| source.parent()?.strip_prefix(root).ok())
-                .unwrap_or_else(|| Path::new(""));
-            let destination = directory.join(relative_parent).join(format!(
-                "{}.{extension}",
-                build::suite_slug(&target.typename)
-            ));
-            destinations
-                .entry(destination.clone())
-                .or_default()
-                .push(format!(
-                    "{} ({})",
-                    target.suite_file.display(),
-                    target.typename
-                ));
-            *output(target) = Some(destination);
-        }
-
-        if let Some((path, suites)) = destinations.iter().find(|(_, suites)| suites.len() > 1) {
-            return Err(RutError::ReportOutput(format!(
-                "multiple suites map to {}:\n  {}",
-                path.display(),
-                suites.join("\n  ")
-            ))
-            .into());
-        }
-
-        for path in destinations.keys() {
-            create_report_parent(path)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn absolute_path(path: &Path) -> std::result::Result<PathBuf, RutError> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        std::env::current_dir()
-            .map(|current| current.join(path))
-            .map_err(|error| {
-                RutError::ReportOutput(format!("failed to resolve current directory: {error}"))
-            })
-    }
-}
-
-fn create_report_parent(path: &Path) -> std::result::Result<(), RutError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            RutError::ReportOutput(format!(
-                "failed to create report directory {}: {error}",
-                parent.display()
-            ))
-        })?;
-    }
-    Ok(())
+    vec![
+        ("RUT_SUITE_TYPENAME".to_string(), target.typename.clone()),
+        (
+            "RUT_SUITE_SLUG".to_string(),
+            build::suite_slug(&target.typename),
+        ),
+        (
+            "RUT_SUITE_FILE".to_string(),
+            source.to_string_lossy().into_owned(),
+        ),
+        (
+            "RUT_SUITE_REL_DIR".to_string(),
+            relative_dir.to_string_lossy().into_owned(),
+        ),
+    ]
 }
 
 fn select_suite_file<'a>(
@@ -275,30 +191,29 @@ fn select_suite_file<'a>(
 }
 
 fn run_suite_file(
-    suite_file: &Path,
-    typename: &str,
-    junit_path: Option<&Path>,
-    gtest_path: Option<&Path>,
+    target: &ExecutionTarget,
+    plugin_crates: &[PluginCrate],
     args: &RunArgs,
 ) -> Result<bool> {
-    eprintln!("Found suite file: {}", suite_file.display());
-    eprintln!("Found suite typename: {}", typename);
+    if !args.help {
+        eprintln!("Found suite file: {}", target.suite_file.display());
+        eprintln!("Found suite typename: {}", target.typename);
+    }
 
     let wrapper = generate_wrapper(
-        suite_file,
-        typename,
-        WrapperOptions {
-            runner: args.runner.clone(),
-            jobs: args.jobs,
-            shuffle: args.shuffle,
-            filters: &args.filter,
-            fail_fast: args.fail_fast,
-            junit_path,
-            gtest_path,
-        },
+        &target.suite_file,
+        &target.typename,
+        WrapperOptions { plugin_crates },
     );
 
-    let status = build::run_temp_project(suite_file, typename, wrapper)?;
+    let status = build::run_temp_project(
+        &target.suite_file,
+        &target.typename,
+        wrapper,
+        plugin_crates,
+        &args.harness_args,
+        &suite_environment(target, args.path.as_deref()),
+    )?;
 
     Ok(status.success())
 }
@@ -329,23 +244,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::RunnerType;
     use tempfile::TempDir;
 
-    fn run_args(path: Option<PathBuf>) -> RunArgs {
-        RunArgs {
-            path,
-            typename: None,
-            runner: RunnerType::Parallel,
-            jobs: None,
-            shuffle: false,
-            filter: Vec::new(),
-            fail_fast: false,
-            junit: None,
-            junit_dir: None,
-            gtest: None,
-            gtest_dir: None,
+    fn target(path: &str) -> ExecutionTarget {
+        ExecutionTarget {
+            suite_file: PathBuf::from(path),
+            typename: "Suite".to_string(),
         }
+    }
+
+    fn environment(target: &ExecutionTarget, scope: Option<&Path>) -> Vec<(String, String)> {
+        suite_environment(target, scope)
     }
 
     fn write_suite_file(root: &Path, relative_path: &str, typenames: &[&str]) -> PathBuf {
@@ -479,123 +388,41 @@ suite! {
     }
 
     #[test]
-    fn rejects_a_single_junit_file_for_multiple_targets() {
-        let mut targets = ["a.rs", "b.rs"]
-            .into_iter()
-            .map(|path| ExecutionTarget {
-                suite_file: PathBuf::from(path),
-                typename: "Suite".to_string(),
-                junit_path: None,
-                gtest_path: None,
-            })
-            .collect::<Vec<_>>();
-        let mut args = run_args(None);
-        args.junit = Some(PathBuf::from("report.xml"));
-
-        let error = resolve_report_outputs(&mut targets, &args).unwrap_err();
-
-        assert!(error.to_string().contains("--junit-dir"));
-    }
-
-    #[test]
-    fn mirrors_source_directories_with_predictable_junit_names() {
-        let project = TempDir::new().unwrap();
-        let first = write_suite_file(project.path(), "first.rs", &["FirstSuite"]);
-        let second = write_suite_file(project.path(), "nested/second.rs", &["SecondSuite"]);
-        let discovered = discover_suites(Some(project.path().to_path_buf())).unwrap();
-        let mut targets = create_execution_targets(&discovered, None, project.path()).unwrap();
-        let report_dir = project.path().join("reports");
-        let mut args = run_args(Some(project.path().to_path_buf()));
-        args.junit_dir = Some(report_dir.clone());
-
-        resolve_report_outputs(&mut targets, &args).unwrap();
-
-        let destinations = targets
-            .iter()
-            .map(|target| target.junit_path.as_ref().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(targets[0].suite_file, first);
-        assert_eq!(targets[1].suite_file, second);
-        assert_eq!(destinations[0], &report_dir.join("first-suite.xml"));
-        assert_eq!(destinations[1], &report_dir.join("nested/second-suite.xml"));
-    }
-
-    #[test]
-    fn rejects_same_directory_junit_slug_collisions() {
-        let project = TempDir::new().unwrap();
-        write_suite_file(project.path(), "first.rs", &["SharedSuite"]);
-        write_suite_file(project.path(), "second.rs", &["SharedSuite"]);
-        let discovered = discover_suites(Some(project.path().to_path_buf())).unwrap();
-        let mut targets = create_execution_targets(&discovered, None, project.path()).unwrap();
-        let mut args = run_args(Some(project.path().to_path_buf()));
-        args.junit_dir = Some(project.path().join("reports"));
-
-        let error = resolve_report_outputs(&mut targets, &args).unwrap_err();
-
-        assert!(error.to_string().contains("shared-suite.xml"));
-        assert!(error.to_string().contains("first.rs"));
-        assert!(error.to_string().contains("second.rs"));
-    }
-
-    #[test]
-    fn plans_junit_and_gtest_outputs_together() {
+    fn describes_the_suite_through_the_environment() {
         let project = TempDir::new().unwrap();
         write_suite_file(project.path(), "nested/suite.rs", &["CalculatorSuite"]);
         let discovered = discover_suites(Some(project.path().to_path_buf())).unwrap();
-        let mut targets = create_execution_targets(&discovered, None, project.path()).unwrap();
-        let mut args = run_args(Some(project.path().to_path_buf()));
-        args.junit_dir = Some(project.path().join("junit"));
-        args.gtest_dir = Some(project.path().join("gtest"));
+        let targets = create_execution_targets(&discovered, None, project.path()).unwrap();
 
-        resolve_report_outputs(&mut targets, &args).unwrap();
+        let environment = environment(&targets[0], Some(project.path()))
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
 
-        assert_eq!(
-            targets[0].junit_path.as_deref(),
-            Some(
-                project
-                    .path()
-                    .join("junit/nested/calculator-suite.xml")
-                    .as_path()
-            )
-        );
-        assert_eq!(
-            targets[0].gtest_path.as_deref(),
-            Some(
-                project
-                    .path()
-                    .join("gtest/nested/calculator-suite.json")
-                    .as_path()
-            )
-        );
+        assert_eq!(environment["RUT_SUITE_TYPENAME"], "CalculatorSuite");
+        assert_eq!(environment["RUT_SUITE_SLUG"], "calculator-suite");
+        assert_eq!(environment["RUT_SUITE_REL_DIR"], "nested");
+        assert!(environment["RUT_SUITE_FILE"].ends_with("nested/suite.rs"));
     }
 
     #[test]
-    fn rejects_same_directory_gtest_slug_collisions() {
+    fn leaves_the_relative_directory_empty_for_a_suite_file_scope() {
         let project = TempDir::new().unwrap();
-        write_suite_file(project.path(), "first.rs", &["SharedSuite"]);
-        write_suite_file(project.path(), "second.rs", &["SharedSuite"]);
-        let discovered = discover_suites(Some(project.path().to_path_buf())).unwrap();
-        let mut targets = create_execution_targets(&discovered, None, project.path()).unwrap();
-        let mut args = run_args(Some(project.path().to_path_buf()));
-        args.gtest_dir = Some(project.path().join("reports"));
+        let suite_file = write_suite_file(project.path(), "suite.rs", &["CalculatorSuite"]);
+        let discovered = discover_suites(Some(suite_file.clone())).unwrap();
+        let targets = create_execution_targets(&discovered, None, &suite_file).unwrap();
 
-        let error = resolve_report_outputs(&mut targets, &args).unwrap_err();
+        let environment = environment(&targets[0], Some(&suite_file))
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
 
-        assert!(error.to_string().contains("shared-suite.json"));
-        assert!(error.to_string().contains("first.rs"));
-        assert!(error.to_string().contains("second.rs"));
+        assert_eq!(environment["RUT_SUITE_REL_DIR"], "");
     }
 
     #[test]
     fn runs_every_suite_and_aggregates_failures() {
         let targets = ["a.rs", "b.rs", "c.rs"]
             .into_iter()
-            .map(|path| ExecutionTarget {
-                suite_file: PathBuf::from(path),
-                typename: "Suite".to_string(),
-                junit_path: None,
-                gtest_path: None,
-            })
+            .map(target)
             .collect::<Vec<_>>();
         let mut attempted = Vec::new();
 
@@ -620,15 +447,7 @@ suite! {
 
     #[test]
     fn succeeds_when_every_suite_succeeds() {
-        let targets = ["a.rs", "b.rs"]
-            .into_iter()
-            .map(|path| ExecutionTarget {
-                suite_file: PathBuf::from(path),
-                typename: "Suite".to_string(),
-                junit_path: None,
-                gtest_path: None,
-            })
-            .collect::<Vec<_>>();
+        let targets = ["a.rs", "b.rs"].into_iter().map(target).collect::<Vec<_>>();
 
         assert!(run_execution_targets(&targets, |_| Ok(true)));
     }

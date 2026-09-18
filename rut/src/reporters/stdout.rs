@@ -23,6 +23,19 @@ impl StdoutReporter {
     }
 }
 
+#[cfg(feature = "cli")]
+impl crate::cli::ReporterPlugin for StdoutReporter {
+    const NAME: &'static str = "stdout";
+    const ABOUT: &'static str = "Prints live progress and results to the terminal";
+
+    fn from_args(
+        _args: &crate::cli::PluginArgs<'_>,
+        _suite: &crate::cli::SuiteContext,
+    ) -> anyhow::Result<Self> {
+        Ok(StdoutReporter::new())
+    }
+}
+
 #[async_trait]
 impl TestReporter for StdoutReporter {
     async fn report_start(

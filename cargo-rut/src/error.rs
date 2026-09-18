@@ -35,4 +35,10 @@ pub enum RutError {
 
     #[error("invalid report output: {0}")]
     ReportOutput(String),
+
+    #[error("invalid arguments: {0}")]
+    InvalidArguments(String),
+
+    #[error("invalid plugin location: {0}")]
+    PluginError(String),
 }

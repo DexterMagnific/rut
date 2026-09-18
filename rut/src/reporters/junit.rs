@@ -45,6 +45,32 @@ impl JUnitReporter {
     }
 }
 
+#[cfg(feature = "cli")]
+impl crate::cli::ReporterPlugin for JUnitReporter {
+    const NAME: &'static str = "junit";
+    const ABOUT: &'static str = "Writes a JUnit XML report";
+
+    fn args() -> Vec<crate::cli::ArgSpec> {
+        crate::cli::builtin::output_args(Self::NAME, "JUnit XML")
+    }
+
+    fn is_active(args: &crate::cli::PluginArgs<'_>) -> bool {
+        args.is_present(Self::NAME) || args.is_present("junit-dir")
+    }
+
+    fn from_args(
+        args: &crate::cli::PluginArgs<'_>,
+        suite: &crate::cli::SuiteContext,
+    ) -> anyhow::Result<Self> {
+        Ok(JUnitReporter::new(crate::cli::builtin::output_path(
+            args,
+            suite,
+            Self::NAME,
+            "xml",
+        )?))
+    }
+}
+
 #[async_trait]
 impl TestReporter for JUnitReporter {
     async fn report_start(

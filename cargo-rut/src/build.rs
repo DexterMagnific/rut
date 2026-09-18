@@ -1,4 +1,5 @@
 use crate::error::RutError;
+use crate::plugins::PluginCrate;
 use cargo_metadata::{DependencyKind, MetadataCommand};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ edition = "2024"
 [dependencies]
 rut = { path = "{rut_path}"{rut_options} }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-
+{plugin_dependencies}
 [workspace]
 "#;
 
@@ -30,7 +31,11 @@ pub struct CachedProject {
 }
 
 impl CachedProject {
-    pub fn new(suite_file: &Path, typename: &str) -> Result<Self, RutError> {
+    pub fn new(
+        suite_file: &Path,
+        typename: &str,
+        plugin_crates: &[PluginCrate],
+    ) -> Result<Self, RutError> {
         let dependency = resolve_rut_dependency(suite_file)?;
         let suite_file = std::fs::canonicalize(suite_file).map_err(|error| {
             RutError::CacheError(format!(
@@ -38,7 +43,7 @@ impl CachedProject {
                 suite_file.display()
             ))
         })?;
-        let suite_id = suite_id(typename, &suite_file, &dependency.owner_id);
+        let suite_id = suite_id(typename, &suite_file, &dependency.owner_id, plugin_crates);
         let cache_root = dependency.target_directory.join("cargo-rut");
         let dir = cache_root.join("generated").join(&suite_id);
         let target_dir = cache_root.join(&suite_id);
@@ -56,19 +61,22 @@ impl CachedProject {
         if !dependency.uses_default_features {
             options.push_str(", default-features = false");
         }
-        if !dependency.features.is_empty() {
-            let features = dependency
-                .features
-                .iter()
-                .map(|feature| format!("\"{}\"", feature.replace('"', "\\\"")))
-                .collect::<Vec<_>>()
-                .join(", ");
-            options.push_str(&format!(", features = [{}]", features));
+        // The harness entry point and the plugin registry live behind this feature.
+        let mut features = dependency.features.clone();
+        if !features.iter().any(|feature| feature == "cli") {
+            features.push("cli".to_string());
         }
+        let features = features
+            .iter()
+            .map(|feature| format!("\"{}\"", feature.replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        options.push_str(&format!(", features = [{}]", features));
 
         let cargo_toml = CARGO_TOML_TEMPLATE
             .replace("{rut_path}", &escaped_rut_path)
-            .replace("{rut_options}", &options);
+            .replace("{rut_options}", &options)
+            .replace("{plugin_dependencies}", &plugin_dependencies(plugin_crates));
 
         write_if_changed(&dir.join("Cargo.toml"), cargo_toml.as_bytes())?;
 
@@ -79,16 +87,30 @@ impl CachedProject {
         write_if_changed(&self.dir.join("src/main.rs"), content.as_bytes())
     }
 
-    pub fn build_and_run(&self) -> Result<std::process::ExitStatus, RutError> {
+    pub fn build_and_run(
+        &self,
+        harness_args: &[String],
+        environment: &[(String, String)],
+    ) -> Result<std::process::ExitStatus, RutError> {
         let manifest_path = self.dir.join("Cargo.toml");
-        let status = Command::new("cargo")
+        let mut command = Command::new("cargo");
+        command
             .env("CARGO_TARGET_DIR", &self.target_dir)
             .args([
                 "run",
                 "--release",
                 "--manifest-path",
                 manifest_path.to_str().unwrap(),
-            ])
+            ]);
+
+        for (key, value) in environment {
+            command.env(key, value);
+        }
+        if !harness_args.is_empty() {
+            command.arg("--").args(harness_args);
+        }
+
+        let status = command
             .status()
             .map_err(|e| RutError::BuildError(format!("failed to run cargo: {}", e)))?;
 
@@ -96,19 +118,42 @@ impl CachedProject {
     }
 }
 
-fn suite_id(typename: &str, suite_file: &Path, owner_id: &str) -> String {
+fn plugin_dependencies(plugin_crates: &[PluginCrate]) -> String {
+    plugin_crates
+        .iter()
+        .map(|plugin| {
+            let path = plugin
+                .path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .replace('"', "\\\"");
+            format!("{} = {{ path = \"{path}\" }}\n", plugin.package)
+        })
+        .collect()
+}
+
+fn suite_id(
+    typename: &str,
+    suite_file: &Path,
+    owner_id: &str,
+    plugin_crates: &[PluginCrate],
+) -> String {
     format!(
         "{}-{}",
         suite_slug(typename),
-        project_hash(suite_file, owner_id)
+        project_hash(suite_file, owner_id, plugin_crates)
     )
 }
 
-fn project_hash(suite_file: &Path, owner_id: &str) -> String {
+fn project_hash(suite_file: &Path, owner_id: &str, plugin_crates: &[PluginCrate]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(owner_id.as_bytes());
     hasher.update([0]);
     hasher.update(suite_file.as_os_str().as_encoded_bytes());
+    for plugin in plugin_crates {
+        hasher.update([0]);
+        hasher.update(plugin.path.as_os_str().as_encoded_bytes());
+    }
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
@@ -271,10 +316,13 @@ pub fn run_temp_project(
     suite_file: &Path,
     typename: &str,
     wrapper: String,
+    plugin_crates: &[PluginCrate],
+    harness_args: &[String],
+    environment: &[(String, String)],
 ) -> Result<std::process::ExitStatus, RutError> {
-    let project = CachedProject::new(suite_file, typename)?;
+    let project = CachedProject::new(suite_file, typename, plugin_crates)?;
     project.write_wrapper(&wrapper)?;
-    project.build_and_run()
+    project.build_and_run(harness_args, environment)
 }
 
 #[cfg(test)]
@@ -315,10 +363,10 @@ mod tests {
         assert!(!dependency.uses_default_features);
         assert_eq!(dependency.features, ["example-feature"]);
 
-        let cached_project = CachedProject::new(&suite_file, "CalculatorSuite").unwrap();
+        let cached_project = CachedProject::new(&suite_file, "CalculatorSuite", &[]).unwrap();
         let manifest = std::fs::read_to_string(cached_project.dir.join("Cargo.toml")).unwrap();
         assert!(manifest.contains("default-features = false"));
-        assert!(manifest.contains("features = [\"example-feature\"]"));
+        assert!(manifest.contains("features = [\"example-feature\", \"cli\"]"));
         assert!(manifest.contains("name = \"run-suite\""));
     }
 
@@ -335,9 +383,9 @@ mod tests {
         let suite_file = project.path().join("suite.rs");
         std::fs::write(&suite_file, "").unwrap();
 
-        let first = CachedProject::new(&suite_file, "CalculatorSuite").unwrap();
+        let first = CachedProject::new(&suite_file, "CalculatorSuite", &[]).unwrap();
         assert!(first.write_wrapper("static wrapper").unwrap());
-        let second = CachedProject::new(&suite_file, "CalculatorSuite").unwrap();
+        let second = CachedProject::new(&suite_file, "CalculatorSuite", &[]).unwrap();
 
         assert_eq!(first.dir, second.dir);
         assert_eq!(first.dir.file_name(), first.target_dir.file_name());

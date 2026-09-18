@@ -50,6 +50,32 @@ impl GTestReporter {
     }
 }
 
+#[cfg(feature = "cli")]
+impl crate::cli::ReporterPlugin for GTestReporter {
+    const NAME: &'static str = "gtest";
+    const ABOUT: &'static str = "Writes a GoogleTest JSON report";
+
+    fn args() -> Vec<crate::cli::ArgSpec> {
+        crate::cli::builtin::output_args(Self::NAME, "GoogleTest JSON")
+    }
+
+    fn is_active(args: &crate::cli::PluginArgs<'_>) -> bool {
+        args.is_present(Self::NAME) || args.is_present("gtest-dir")
+    }
+
+    fn from_args(
+        args: &crate::cli::PluginArgs<'_>,
+        suite: &crate::cli::SuiteContext,
+    ) -> anyhow::Result<Self> {
+        Ok(GTestReporter::new(crate::cli::builtin::output_path(
+            args,
+            suite,
+            Self::NAME,
+            "json",
+        )?))
+    }
+}
+
 #[async_trait]
 impl TestReporter for GTestReporter {
     async fn report_start(

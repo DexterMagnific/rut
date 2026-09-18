@@ -1,4 +1,5 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use crate::error::RutError;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -11,7 +12,18 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Run test suites selected by path or typename
-    Run(RunArgs),
+    ///
+    /// Arguments that are not driver options are forwarded to the test
+    /// harness, where the selected runner and reporters parse them.
+    #[command(disable_help_flag = true)]
+    Run {
+        #[arg(
+            value_name = "ARGS",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        args: Vec<String>,
+    },
 
     /// List discovered suite files, names, and typenames
     List(ListArgs),
@@ -24,190 +36,220 @@ pub struct ListArgs {
     pub path: Option<PathBuf>,
 }
 
-#[derive(Parser)]
+/// Driver options of `cargo rut run`, plus the arguments forwarded verbatim.
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct RunArgs {
-    /// Path to suite file (or directory for discovery)
-    #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
-
-    /// Exact suite typename to run
-    #[arg(long, value_name = "TYPE")]
     pub typename: Option<String>,
-
-    /// Runner type: parallel or sequential
-    #[arg(long, value_enum, default_value = "parallel")]
-    pub runner: RunnerType,
-
-    /// Max concurrent jobs (parallel runner only)
-    #[arg(long, short = 'j')]
-    pub jobs: Option<usize>,
-
-    /// Shuffle test case order (parallel runner only)
-    #[arg(long)]
-    pub shuffle: bool,
-
-    /// Run tests whose qualified suite.case.test name contains this value
-    #[arg(long, value_name = "PATTERN")]
-    pub filter: Vec<String>,
-
-    /// Stop admitting new test cases after the first failure
-    #[arg(long)]
-    pub fail_fast: bool,
-
-    /// Write JUnit XML for a single selected suite
-    #[arg(long, value_name = "FILE", conflicts_with = "junit_dir")]
-    pub junit: Option<PathBuf>,
-
-    /// Write one predictable JUnit XML file per selected suite
-    #[arg(long, value_name = "DIR", conflicts_with = "junit")]
-    pub junit_dir: Option<PathBuf>,
-
-    /// Write GoogleTest JSON for a single selected suite
-    #[arg(long, value_name = "FILE", conflicts_with = "gtest_dir")]
-    pub gtest: Option<PathBuf>,
-
-    /// Write one predictable GoogleTest JSON file per selected suite
-    #[arg(long, value_name = "DIR", conflicts_with = "gtest")]
-    pub gtest_dir: Option<PathBuf>,
+    /// Directories of crates exporting runner or reporter plugins.
+    pub plugin_crates: Vec<PathBuf>,
+    /// Directories scanned for plugin crates.
+    pub plugin_dirs: Vec<PathBuf>,
+    /// Whether help was requested; it is forwarded to the harness as well.
+    pub help: bool,
+    pub harness_args: Vec<String>,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
-pub enum RunnerType {
-    Parallel,
-    Sequential,
+pub const RUN_HELP: &str = "\
+Run rut test suites
+
+Usage: cargo rut run [PATH] [DRIVER OPTIONS] [HARNESS OPTIONS]
+
+Arguments:
+  [PATH]  Suite file, or directory to discover suites in
+
+Driver options:
+      --typename <TYPE>     Exact suite typename to run
+      --plugin-crate <DIR>  Crate exporting runner or reporter plugins, repeatable
+      --plugins-dir <DIR>   Directory scanned for plugin crates, repeatable
+  -h, --help                Show this help, followed by the harness help
+
+Every other argument is forwarded to the test harness, where the selected runner
+and reporters parse it. Use `--` to force forwarding.
+";
+
+impl RunArgs {
+    /// Splits raw `cargo rut run` arguments into driver options and forwarded ones.
+    ///
+    /// Only the first bare token is treated as the suite path; later bare tokens
+    /// are assumed to be values of forwarded options, whose arity is unknown here.
+    pub fn parse(tokens: &[String]) -> Result<Self, RutError> {
+        let mut args = Self::default();
+        let mut positional_allowed = true;
+        let mut iterator = tokens.iter().enumerate();
+
+        while let Some((index, token)) = iterator.next() {
+            if token == "--" {
+                args.harness_args
+                    .extend(tokens[index + 1..].iter().cloned());
+                break;
+            }
+
+            match split_option(token) {
+                Some(("--typename", inline)) => {
+                    args.typename = Some(option_value("--typename", inline, &mut iterator)?);
+                }
+                Some(("--plugin-crate", inline)) => {
+                    args.plugin_crates.push(PathBuf::from(option_value(
+                        "--plugin-crate",
+                        inline,
+                        &mut iterator,
+                    )?));
+                }
+                Some(("--plugins-dir", inline)) => {
+                    args.plugin_dirs.push(PathBuf::from(option_value(
+                        "--plugins-dir",
+                        inline,
+                        &mut iterator,
+                    )?));
+                }
+                _ => {
+                    if token == "--help" || token == "-h" {
+                        args.help = true;
+                    }
+
+                    if positional_allowed && !token.starts_with('-') {
+                        args.path = Some(PathBuf::from(token));
+                    } else {
+                        args.harness_args.push(token.clone());
+                    }
+                    positional_allowed = false;
+                }
+            }
+        }
+
+        Ok(args)
+    }
+}
+
+fn split_option(token: &str) -> Option<(&str, Option<&str>)> {
+    if !token.starts_with("--") {
+        return None;
+    }
+
+    match token.split_once('=') {
+        Some((name, value)) => Some((name, Some(value))),
+        None => Some((token, None)),
+    }
+}
+
+fn option_value<'a>(
+    name: &str,
+    inline: Option<&str>,
+    iterator: &mut impl Iterator<Item = (usize, &'a String)>,
+) -> Result<String, RutError> {
+    if let Some(value) = inline {
+        return Ok(value.to_string());
+    }
+
+    iterator
+        .next()
+        .map(|(_, value)| value.clone())
+        .ok_or_else(|| RutError::InvalidArguments(format!("{name} requires a value")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn run_args(arguments: &[&str]) -> RunArgs {
-        let cli = Cli::try_parse_from(arguments).unwrap();
-        match cli.command {
-            Commands::Run(args) => args,
-            Commands::List(_) => panic!("expected run command"),
-        }
+    fn parse(arguments: &[&str]) -> RunArgs {
+        let tokens = arguments
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect::<Vec<_>>();
+        RunArgs::parse(&tokens).unwrap()
     }
 
     #[test]
-    fn parses_legacy_path_syntax() {
-        let args = run_args(&["cargo-rut", "run", "tests/suite.rs"]);
+    fn parses_path_only() {
+        let args = parse(&["tests/suite.rs"]);
 
         assert_eq!(args.path, Some(PathBuf::from("tests/suite.rs")));
         assert_eq!(args.typename, None);
-        assert!(matches!(args.runner, RunnerType::Parallel));
-        assert_eq!(args.jobs, None);
-        assert!(!args.shuffle);
-        assert!(args.filter.is_empty());
-        assert!(!args.fail_fast);
-        assert_eq!(args.junit, None);
-        assert_eq!(args.junit_dir, None);
-        assert_eq!(args.gtest, None);
-        assert_eq!(args.gtest_dir, None);
+        assert!(args.harness_args.is_empty());
     }
 
     #[test]
-    fn parses_typename_without_a_path() {
-        let args = run_args(&["cargo-rut", "run", "--typename", "CalculatorSuite"]);
-
-        assert_eq!(args.path, None);
-        assert_eq!(args.typename.as_deref(), Some("CalculatorSuite"));
-    }
-
-    #[test]
-    fn parses_path_scoped_typename_with_runner_options() {
-        let args = run_args(&[
-            "cargo-rut",
-            "run",
-            "tests",
-            "--typename",
-            "CalculatorSuite",
-            "--runner",
-            "sequential",
-            "--jobs",
-            "2",
-            "--shuffle",
-            "--filter",
-            "addition",
-            "--filter",
-            "edge case",
-            "--fail-fast",
-        ]);
+    fn forwards_unknown_options_with_their_values() {
+        let args = parse(&["tests", "--runner", "sequential", "--jobs", "4", "--shuffle"]);
 
         assert_eq!(args.path, Some(PathBuf::from("tests")));
+        assert_eq!(
+            args.harness_args,
+            ["--runner", "sequential", "--jobs", "4", "--shuffle"]
+        );
+    }
+
+    #[test]
+    fn accepts_driver_options_before_the_path() {
+        let args = parse(&[
+            "--typename",
+            "CalculatorSuite",
+            "tests",
+            "--filter",
+            "addition",
+        ]);
+
         assert_eq!(args.typename.as_deref(), Some("CalculatorSuite"));
-        assert!(matches!(args.runner, RunnerType::Sequential));
-        assert_eq!(args.jobs, Some(2));
-        assert!(args.shuffle);
-        assert_eq!(args.filter, ["addition", "edge case"]);
-        assert!(args.fail_fast);
+        assert_eq!(args.path, Some(PathBuf::from("tests")));
+        assert_eq!(args.harness_args, ["--filter", "addition"]);
     }
 
     #[test]
-    fn parses_junit_file_and_directory_outputs() {
-        let file = run_args(&[
-            "cargo-rut",
-            "run",
-            "suite.rs",
-            "--junit",
-            "reports/suite.xml",
-        ]);
-        assert_eq!(file.junit, Some(PathBuf::from("reports/suite.xml")));
+    fn accepts_inline_driver_values() {
+        let args = parse(&["--typename=CalculatorSuite", "--plugin-crate=plugins/mine"]);
 
-        let directory = run_args(&["cargo-rut", "run", "tests", "--junit-dir", "reports"]);
-        assert_eq!(directory.junit_dir, Some(PathBuf::from("reports")));
+        assert_eq!(args.typename.as_deref(), Some("CalculatorSuite"));
+        assert_eq!(args.plugin_crates, [PathBuf::from("plugins/mine")]);
     }
 
     #[test]
-    fn rejects_conflicting_junit_outputs() {
-        let error = match Cli::try_parse_from([
-            "cargo-rut",
-            "run",
-            "--junit",
-            "report.xml",
-            "--junit-dir",
-            "reports",
-        ]) {
-            Ok(_) => panic!("conflicting JUnit options should be rejected"),
-            Err(error) => error,
-        };
-
-        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn parses_gtest_outputs_and_allows_junit_too() {
-        let args = run_args(&[
-            "cargo-rut",
-            "run",
-            "suite.rs",
-            "--junit",
-            "report.xml",
-            "--gtest",
-            "report.json",
+    fn collects_repeated_plugin_locations() {
+        let args = parse(&[
+            "--plugin-crate",
+            "a",
+            "--plugin-crate",
+            "b",
+            "--plugins-dir",
+            "plugins",
         ]);
 
-        assert_eq!(args.junit, Some(PathBuf::from("report.xml")));
-        assert_eq!(args.gtest, Some(PathBuf::from("report.json")));
-
-        let directory = run_args(&["cargo-rut", "run", "tests", "--gtest-dir", "reports"]);
-        assert_eq!(directory.gtest_dir, Some(PathBuf::from("reports")));
+        assert_eq!(args.plugin_crates, [PathBuf::from("a"), PathBuf::from("b")]);
+        assert_eq!(args.plugin_dirs, [PathBuf::from("plugins")]);
     }
 
     #[test]
-    fn rejects_conflicting_gtest_outputs() {
-        let error = Cli::try_parse_from([
-            "cargo-rut",
-            "run",
-            "--gtest",
-            "report.json",
-            "--gtest-dir",
-            "reports",
-        ])
-        .err()
-        .expect("conflicting GTest options should be rejected");
+    fn forwards_everything_after_a_double_dash() {
+        let args = parse(&["suite.rs", "--", "--typename", "NotADriverOption"]);
 
-        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert_eq!(args.path, Some(PathBuf::from("suite.rs")));
+        assert_eq!(args.typename, None);
+        assert_eq!(args.harness_args, ["--typename", "NotADriverOption"]);
+    }
+
+    #[test]
+    fn records_and_forwards_help() {
+        let args = parse(&["suite.rs", "--help"]);
+
+        assert!(args.help);
+        assert_eq!(args.harness_args, ["--help"]);
+    }
+
+    #[test]
+    fn reports_missing_driver_values() {
+        let error = RunArgs::parse(&["--typename".to_string()]).unwrap_err();
+
+        assert!(error.to_string().contains("--typename requires a value"));
+    }
+
+    #[test]
+    fn collects_raw_run_arguments() {
+        let cli = Cli::try_parse_from(["cargo-rut", "run", "tests", "--jobs", "4"]).unwrap();
+
+        match cli.command {
+            Commands::Run { args } => assert_eq!(args, ["tests", "--jobs", "4"]),
+            Commands::List(_) => panic!("expected run command"),
+        }
     }
 
     #[test]
@@ -216,7 +258,7 @@ mod tests {
 
         match cli.command {
             Commands::List(args) => assert_eq!(args.path, Some(PathBuf::from("tests"))),
-            Commands::Run(_) => panic!("expected list command"),
+            Commands::Run { .. } => panic!("expected list command"),
         }
     }
 }

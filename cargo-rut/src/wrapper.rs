@@ -1,16 +1,15 @@
-use crate::cli::RunnerType;
+use crate::plugins::PluginCrate;
 use std::path::Path;
 
 pub struct WrapperOptions<'a> {
-    pub runner: RunnerType,
-    pub jobs: Option<usize>,
-    pub shuffle: bool,
-    pub filters: &'a [String],
-    pub fail_fast: bool,
-    pub junit_path: Option<&'a Path>,
-    pub gtest_path: Option<&'a Path>,
+    pub plugin_crates: &'a [PluginCrate],
 }
 
+/// Generates the `main.rs` of the temporary crate that runs one suite.
+///
+/// The harness owns argument parsing, so the generated code depends only on the
+/// suite typename and the plugin crates to register; command line options never
+/// appear here and therefore never trigger a rebuild.
 pub fn generate_wrapper(suite_file: &Path, typename: &str, options: WrapperOptions<'_>) -> String {
     // Convert to absolute path so include! can find it from temp directory
     let absolute_suite_path = std::fs::canonicalize(suite_file)
@@ -18,83 +17,21 @@ pub fn generate_wrapper(suite_file: &Path, typename: &str, options: WrapperOptio
         .display()
         .to_string();
 
-    let reporter_code = if options.junit_path.is_none() && options.gtest_path.is_none() {
-        "rut::StdoutReporter::new()".to_string()
-    } else {
-        let mut code = "rut::MultiReporter::new()\n                    .add_reporter(Box::new(rut::StdoutReporter::new()))".to_string();
-        if let Some(path) = options.junit_path {
-            let path_literal = format!("{:?}", path.to_string_lossy());
-            code.push_str(&format!(
-                "\n                    .add_reporter(Box::new(rut::JUnitReporter::new({path_literal})))"
-            ));
-        }
-        if let Some(path) = options.gtest_path {
-            let path_literal = format!("{:?}", path.to_string_lossy());
-            code.push_str(&format!(
-                "\n                    .add_reporter(Box::new(rut::GTestReporter::new({path_literal})))"
-            ));
-        }
-        code
-    };
-
-    let filter_code = options
-        .filters
+    let registrations = options
+        .plugin_crates
         .iter()
-        .map(|filter| format!(".with_filter({filter:?})"))
+        .map(|plugin| format!("    {}::__rut_plugins(&mut registry);\n", plugin.ident()))
         .collect::<String>();
-    let fail_fast_code = if options.fail_fast {
-        ".fail_fast()"
-    } else {
-        ""
-    };
-
-    let runner_code = match options.runner {
-        RunnerType::Parallel => {
-            let jobs_code = options
-                .jobs
-                .map(|j| format!(".with_max_jobs({})", j))
-                .unwrap_or_default();
-            let shuffle_code = if options.shuffle {
-                ".shuffle_test_cases()"
-            } else {
-                ""
-            };
-            format!(
-                r#"rut::ParallelRunnerBuilder::new(){}{}{}{}
-                    .with_suite(Box::new({}::new()))
-                    .with_reporter(Box::new({}))
-                    .build()"#,
-                jobs_code, shuffle_code, filter_code, fail_fast_code, typename, reporter_code
-            )
-        }
-        RunnerType::Sequential => format!(
-            r#"rut::SequentialRunner::new(){}{}
-                .with_suite(Box::new({}::new()))
-                .with_reporter(Box::new({}))"#,
-            filter_code, fail_fast_code, typename, reporter_code
-        ),
-    };
 
     format!(
-        r#"include!(r"{}");
-
-use rut::TestRunner as _;
+        r#"include!(r"{absolute_suite_path}");
 
 #[tokio::main]
-async fn main() {{
-    let exit_code = match {}
-        .run()
-        .await
-    {{
-        Ok(report) => if report.total_failed > 0 {{ 1 }} else {{ 0 }},
-        Err(error) => {{
-            eprintln!("Reporting failed: {{error}}");
-            2
-        }}
-    }};
-    std::process::exit(exit_code);
-}}"#,
-        absolute_suite_path, runner_code
+async fn main() -> std::process::ExitCode {{
+    #[allow(unused_mut)]
+    let mut registry = rut::cli::PluginRegistry::with_builtins();
+{registrations}    rut::cli::harness_main(registry, || Box::new({typename}::new())).await
+}}"#
     )
 }
 
@@ -103,90 +40,47 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn options(runner: RunnerType) -> WrapperOptions<'static> {
-        WrapperOptions {
-            runner,
-            jobs: None,
-            shuffle: false,
-            filters: &[],
-            fail_fast: false,
-            junit_path: None,
-            gtest_path: None,
-        }
+    fn wrapper(plugin_crates: &[PluginCrate]) -> String {
+        generate_wrapper(
+            &PathBuf::from("test_suite.rs"),
+            "CalculatorSuite",
+            WrapperOptions { plugin_crates },
+        )
     }
 
     #[test]
-    fn test_generate_wrapper_parallel_default() {
-        let wrapper = generate_wrapper(
-            &PathBuf::from("test_suite.rs"),
-            "CalculatorSuite",
-            options(RunnerType::Parallel),
-        );
-        assert!(wrapper.contains("ParallelRunnerBuilder::new()"));
-        assert!(wrapper.contains("use rut::TestRunner as _;"));
-        assert!(!wrapper.contains("TestRunnerInternal"));
-        assert!(wrapper.contains("CalculatorSuite::new()"));
-        assert!(wrapper.contains("StdoutReporter::new()"));
+    fn generates_a_harness_entry_point() {
+        let wrapper = wrapper(&[]);
+
+        assert!(wrapper.contains("rut::cli::PluginRegistry::with_builtins()"));
+        assert!(wrapper.contains("Box::new(CalculatorSuite::new())"));
+        assert!(!wrapper.contains("__rut_plugins"));
+    }
+
+    #[test]
+    fn does_not_bake_command_line_options_into_the_source() {
+        let wrapper = wrapper(&[]);
+
         assert!(!wrapper.contains("with_max_jobs"));
         assert!(!wrapper.contains("shuffle_test_cases"));
+        assert!(!wrapper.contains("with_filter"));
+        assert!(!wrapper.contains("JUnitReporter"));
     }
 
     #[test]
-    fn test_generate_wrapper_parallel_with_jobs_and_shuffle() {
-        let mut options = options(RunnerType::Parallel);
-        options.jobs = Some(4);
-        options.shuffle = true;
-        let wrapper = generate_wrapper(&PathBuf::from("test_suite.rs"), "CalculatorSuite", options);
-        assert!(wrapper.contains("with_max_jobs(4)"));
-        assert!(wrapper.contains("shuffle_test_cases()"));
-    }
+    fn registers_every_plugin_crate() {
+        let wrapper = wrapper(&[
+            PluginCrate {
+                package: "my-plugins".to_string(),
+                path: PathBuf::from("/tmp/my-plugins"),
+            },
+            PluginCrate {
+                package: "other".to_string(),
+                path: PathBuf::from("/tmp/other"),
+            },
+        ]);
 
-    #[test]
-    fn test_generate_wrapper_sequential() {
-        let wrapper = generate_wrapper(
-            &PathBuf::from("test_suite.rs"),
-            "CalculatorSuite",
-            options(RunnerType::Sequential),
-        );
-        assert!(wrapper.contains("SequentialRunner::new()"));
-        assert!(wrapper.contains("CalculatorSuite::new()"));
-        assert!(!wrapper.contains("ParallelRunnerBuilder"));
-    }
-
-    #[test]
-    fn test_generate_wrapper_with_junit_reporter() {
-        let mut options = options(RunnerType::Sequential);
-        options.junit_path = Some(Path::new("reports/a report.xml"));
-        let wrapper = generate_wrapper(&PathBuf::from("test_suite.rs"), "CalculatorSuite", options);
-
-        assert!(wrapper.contains("MultiReporter::new()"));
-        assert!(wrapper.contains("StdoutReporter::new()"));
-        assert!(wrapper.contains("JUnitReporter::new(\"reports/a report.xml\")"));
-        assert!(wrapper.contains("Reporting failed"));
-    }
-
-    #[test]
-    fn test_generate_wrapper_with_junit_and_gtest_reporters() {
-        let mut options = options(RunnerType::Sequential);
-        options.junit_path = Some(Path::new("reports/a report.xml"));
-        options.gtest_path = Some(Path::new("reports/a report.json"));
-        let wrapper = generate_wrapper(&PathBuf::from("test_suite.rs"), "CalculatorSuite", options);
-
-        assert!(wrapper.contains("StdoutReporter::new()"));
-        assert!(wrapper.contains("JUnitReporter::new(\"reports/a report.xml\")"));
-        assert!(wrapper.contains("GTestReporter::new(\"reports/a report.json\")"));
-    }
-
-    #[test]
-    fn test_generate_wrapper_with_filters() {
-        let filters = ["addition".to_string(), "edge \"case\"".to_string()];
-        let mut options = options(RunnerType::Sequential);
-        options.filters = &filters;
-        options.fail_fast = true;
-        let wrapper = generate_wrapper(&PathBuf::from("test_suite.rs"), "CalculatorSuite", options);
-
-        assert!(wrapper.contains(".with_filter(\"addition\")"));
-        assert!(wrapper.contains(".with_filter(\"edge \\\"case\\\"\")"));
-        assert!(wrapper.contains(".fail_fast()"));
+        assert!(wrapper.contains("my_plugins::__rut_plugins(&mut registry);"));
+        assert!(wrapper.contains("other::__rut_plugins(&mut registry);"));
     }
 }

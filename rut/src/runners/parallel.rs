@@ -62,16 +62,68 @@ impl ParallelRunner {
         self
     }
 
+    /// Adds a qualified-name substring filter in place.
+    pub fn add_filter(&mut self, filter: impl Into<String>) {
+        self.filters.push(filter.into());
+    }
+
     /// Stops dispatching new cases after the first failed case.
     pub fn fail_fast(mut self) -> Self {
         self.fail_fast = true;
         self
+    }
+
+    /// Enables or disables fail-fast in place.
+    pub fn set_fail_fast(&mut self, fail_fast: bool) {
+        self.fail_fast = fail_fast;
+    }
+
+    /// Sets the maximum number of cases that may run concurrently.
+    pub fn set_max_jobs(&mut self, max_jobs: usize) {
+        self.max_jobs = max_jobs;
+    }
+
+    /// Randomizes case dispatch order while preserving declaration order in reports.
+    pub fn set_shuffle_test_cases(&mut self, shuffle: bool) {
+        self.shuffle_test_cases = shuffle;
     }
 }
 
 impl Default for ParallelRunner {
     fn default() -> Self {
         Self::new_default()
+    }
+}
+
+#[cfg(feature = "cli")]
+impl crate::cli::RunnerPlugin for ParallelRunner {
+    const NAME: &'static str = "parallel";
+    const ABOUT: &'static str = "Runs independent test cases concurrently";
+
+    fn args() -> Vec<crate::cli::ArgSpec> {
+        vec![
+            crate::cli::ArgSpec::value("jobs")
+                .short('j')
+                .value_name("N")
+                .help("Maximum number of test cases running concurrently"),
+            crate::cli::ArgSpec::flag("shuffle").help("Randomizes test case dispatch order"),
+        ]
+    }
+
+    fn from_args(
+        args: &crate::cli::PluginArgs<'_>,
+        core: &crate::cli::CoreArgs,
+    ) -> anyhow::Result<Self> {
+        let mut runner = ParallelRunner::new_default();
+        if let Some(jobs) = args.parsed::<usize>("jobs")? {
+            runner.set_max_jobs(jobs);
+        }
+        runner.set_shuffle_test_cases(args.flag("shuffle"));
+        for filter in &core.filters {
+            runner.add_filter(filter.clone());
+        }
+        runner.set_fail_fast(core.fail_fast);
+        Ok(runner)
     }
 }
 
@@ -154,14 +206,12 @@ impl Default for ParallelRunnerBuilder {
 
 #[async_trait]
 impl crate::runner::TestRunner for ParallelRunner {
-    fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self {
+    fn set_suite(&mut self, suite: Box<dyn TestSuite>) {
         self.suite = Some(suite);
-        self
     }
 
-    fn with_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self {
+    fn set_reporter(&mut self, reporter: Box<dyn TestReporter>) {
         self.reporter = Some(reporter);
-        self
     }
 
     async fn run(self) -> ReporterResult<SuiteReport> {

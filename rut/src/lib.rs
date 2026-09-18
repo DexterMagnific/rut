@@ -36,6 +36,8 @@ extern crate self as rut;
 mod panic_capture;
 
 pub mod case;
+#[cfg(feature = "cli")]
+pub mod cli;
 pub mod report;
 pub mod reporter;
 pub mod reporters;
@@ -54,8 +56,8 @@ pub use reporter::{
     TestReporterInternal,
 };
 pub use runner::{
-    PanicInfo, ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunner,
-    catch_test_panic, run_test_with_retries, run_test_with_timeout,
+    BoxedRunner, PanicInfo, ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunner,
+    TestRunnerInternal, catch_test_panic, run_test_with_retries, run_test_with_timeout,
 };
 pub use rut_macros::suite;
 pub use suite::{TestSuite, TestSuiteBuilder, TestSuiteInternal};
