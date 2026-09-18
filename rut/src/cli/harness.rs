@@ -1,10 +1,11 @@
 use crate::cli::args::{PluginArgs, to_clap_arg};
 use crate::cli::plugin::{CoreArgs, SuiteContext};
 use crate::cli::registry::{
-    CORE_FAIL_FAST, CORE_FILTER, CORE_REPORTER, CORE_RUNNER, PluginRegistry,
+    CORE_FAIL_FAST, CORE_FILTER, CORE_REPORTER, CORE_RUNNER, CORE_SUITE_ARGS, PluginRegistry,
 };
 use crate::reporter::{MultiReporter, TestReporter};
 use crate::suite::TestSuite;
+use crate::SuiteArgs;
 use anyhow::{Result, anyhow};
 use clap::builder::PossibleValuesParser;
 use std::ffi::OsString;
@@ -12,6 +13,7 @@ use std::process::ExitCode;
 
 const EXIT_FAILED_TESTS: u8 = 1;
 const EXIT_ERROR: u8 = 2;
+const CORE_SUITE_ARGS_FLAG: &str = "--suite-args";
 
 /// Runs a generated test harness from the process arguments.
 ///
@@ -43,6 +45,15 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    let (args, suite_arg_tokens) = split_suite_args(args);
+    let suite_args = match SuiteArgs::parse(&suite_arg_tokens) {
+        Ok(suite_args) => suite_args,
+        Err(error) => {
+            eprintln!("rut: {error:#}");
+            return EXIT_ERROR;
+        }
+    };
+
     let matches = match build_command(&registry) {
         Ok(command) => match command.try_get_matches_from(args) {
             Ok(matches) => matches,
@@ -57,13 +68,39 @@ where
         }
     };
 
-    match run(&registry, &matches, make_suite).await {
+    match run(&registry, &matches, suite_args, make_suite).await {
         Ok(code) => code,
         Err(error) => {
             eprintln!("rut: {error:#}");
             EXIT_ERROR
         }
     }
+}
+
+/// Splits the terminal `--suite-args` section from the arguments clap parses.
+///
+/// Everything after the option belongs to the suite, so it never reaches clap.
+fn split_suite_args<I, T>(args: I) -> (Vec<OsString>, Vec<String>)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let mut parsed = Vec::new();
+    let mut suite_args = Vec::new();
+    let mut iterator = args.into_iter().map(Into::into);
+
+    for argument in iterator.by_ref() {
+        if argument == OsString::from(CORE_SUITE_ARGS_FLAG) {
+            break;
+        }
+        parsed.push(argument);
+    }
+
+    for argument in iterator {
+        suite_args.push(argument.to_string_lossy().into_owned());
+    }
+
+    (parsed, suite_args)
 }
 
 /// Builds the command line interface exposed by a harness.
@@ -122,6 +159,14 @@ pub fn build_command(registry: &PluginRegistry) -> Result<clap::Command> {
                 .long(CORE_FAIL_FAST)
                 .action(clap::ArgAction::SetTrue)
                 .help("Stops admitting new test cases after the first failure"),
+        )
+        .arg(
+            // Stripped before parsing; declared so that it appears in the help.
+            clap::Arg::new(CORE_SUITE_ARGS)
+                .long(CORE_SUITE_ARGS)
+                .value_name("KEY=VALUE...")
+                .num_args(0..)
+                .help("Last option: every following argument is passed to the suite"),
         );
 
     let mut command = command;
@@ -141,7 +186,12 @@ pub fn build_command(registry: &PluginRegistry) -> Result<clap::Command> {
     Ok(command)
 }
 
-async fn run<F>(registry: &PluginRegistry, matches: &clap::ArgMatches, make_suite: F) -> Result<u8>
+async fn run<F>(
+    registry: &PluginRegistry,
+    matches: &clap::ArgMatches,
+    suite_args: SuiteArgs,
+    make_suite: F,
+) -> Result<u8>
 where
     F: FnOnce() -> Box<dyn TestSuite>,
 {
@@ -164,6 +214,7 @@ where
     let mut runner = runner_plugin.build(&args, &core)?;
     runner.set_suite(make_suite());
     runner.set_reporter(reporter);
+    runner.set_suite_args(suite_args);
 
     match runner.run_boxed().await {
         Ok(report) => Ok(if report.total_failed > 0 {

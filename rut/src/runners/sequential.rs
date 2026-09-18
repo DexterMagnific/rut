@@ -1,6 +1,7 @@
 use crate::report::SuiteReport;
 use crate::reporter::{ReporterResult, TestReporter};
 use crate::suite::TestSuite;
+use crate::SuiteArgs;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ pub struct SequentialRunner {
     reporter: Option<Box<dyn TestReporter>>,
     filters: Vec<String>,
     fail_fast: bool,
+    args: SuiteArgs,
 }
 
 impl SequentialRunner {
@@ -22,6 +24,7 @@ impl SequentialRunner {
             reporter: None,
             filters: Vec::new(),
             fail_fast: false,
+            args: SuiteArgs::new(),
         }
     }
 
@@ -82,12 +85,23 @@ impl crate::runner::TestRunner for SequentialRunner {
         self.reporter = Some(reporter);
     }
 
+    fn set_suite_args(&mut self, args: SuiteArgs) {
+        self.args = args;
+    }
+
+    fn suite_args(&self) -> &SuiteArgs {
+        &self.args
+    }
+
     async fn run(self) -> ReporterResult<SuiteReport> {
         let fail_fast = self.fail_fast;
-        let suite = self.suite.expect("suite required");
+        let args = self.args.clone();
+        let mut suite = self.suite.expect("suite required");
+        suite.set_args(args.clone());
         let mut reporter = self
             .reporter
             .unwrap_or_else(|| Box::new(crate::reporters::StdoutReporter::new()));
+        reporter.set_suite_args(args.clone());
         let suite_name = suite.name().to_owned();
 
         let selected_cases = select_cases(&suite_name, suite.test_cases(), &self.filters);
@@ -145,14 +159,15 @@ impl crate::runner::TestRunner for SequentialRunner {
                 .await?;
 
             let case_total_start = Instant::now();
-            case.setup_case(ctx).await;
+            case.setup_case(ctx, &args).await;
             let case_duration_start = Instant::now();
 
             for test in tests {
                 reporter.report_test_start(&case_name, test.name()).await?;
 
                 let test_start = Instant::now();
-                let mut result = crate::runner::run_test_with_retries(test.as_ref(), ctx).await;
+                let mut result =
+                    crate::runner::run_test_with_retries(test.as_ref(), ctx, &args).await;
                 let duration = test_start.elapsed();
 
                 if result.name.is_empty() {
@@ -178,7 +193,7 @@ impl crate::runner::TestRunner for SequentialRunner {
             }
 
             let case_duration = case_duration_start.elapsed();
-            case.teardown_case(ctx).await;
+            case.teardown_case(ctx, &args).await;
             let case_total_duration = case_total_start.elapsed();
             reporter
                 .report_case_finish(&case_name, case_duration, case_total_duration, Utc::now())

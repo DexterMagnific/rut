@@ -126,6 +126,15 @@ Without `--reporters`, `stdout` is used, plus every reporter whose output option
 cargo rut run path/to/suite.rs --help
 ```
 
+* Pass arguments to the suite itself
+
+```console
+cargo rut run path/to/suite.rs --suite-args ip=10.0.0.1 port=8080
+```
+
+`--suite-args` must come last: every argument after it belongs to the suite and must be in
+`KEY=VALUE` form. See [Suite Arguments](#suite-arguments).
+
 ## Suites, Cases and Tests
 
 A suite contains related test cases, and each case contains one or more tests.
@@ -253,6 +262,63 @@ test(name = "requires database") {
 ```
 
 Skipped tests do not count as failures and retain their reason in JUnit and GoogleTest reports.
+
+## Suite Arguments
+
+Values that a suite needs from its environment, such as the address of a server under test, are
+supplied as `KEY=VALUE` pairs and are readable everywhere through the `args` binding:
+
+```rust
+use rut::{TestResult, suite};
+
+suite! {
+    typename = ApiSuite;
+    name = "API";
+
+    setup {
+        // Available in suite setup, before any test runs
+        println!("targeting {}", args.get_or("ip", "127.0.0.1"));
+    }
+
+    test_case(name = "connection") {
+        test(name = "reaches the server") {
+            let ip = args.get_or("ip", "127.0.0.1");
+            let port: u16 = args.parsed("port").unwrap().unwrap_or(80);
+
+            if ping(ip, port).await {
+                TestResult::passed()
+            } else {
+                TestResult::failed(format!("{ip}:{port} is unreachable"))
+            }
+        }
+    }
+}
+```
+
+`args` offers `get`, `get_or`, `contains`, `parsed::<T>` for a typed optional value, `required::<T>`
+for a typed mandatory one, and `iter`. It is available in suite setup and teardown, case setup and
+teardown, and test bodies, alongside `context` when the suite declares one.
+
+With `cargo rut`, arguments are supplied after `--suite-args`, which must be the last option:
+
+```console
+cargo rut run path/to/suite.rs --suite-args ip=10.0.0.1 port=8080
+```
+
+An argument that is not in `KEY=VALUE` form stops the run. In manual runs, the same values are set
+on the runner:
+
+```rust
+let report = SequentialRunner::new()
+    .with_suite(Box::new(ApiSuite::new()))
+    .with_suite_arg("ip", "10.0.0.1")
+    .with_suite_arg("port", "8080")
+    .run()
+    .await?;
+```
+
+Use `with_suite_args` to supply a whole `SuiteArgs` at once. Reporters receive the same values
+through `TestReporter::set_suite_args`.
 
 ## Setup and Teardown
 

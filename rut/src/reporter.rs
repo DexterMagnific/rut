@@ -43,6 +43,7 @@ pub trait TestReporterInternal: Send + Sync {
         total_duration: Duration,
         finished_at: DateTime<Utc>,
     ) -> BoxFuture<'a, ReporterResult<()>>;
+    fn set_suite_args(&mut self, args: crate::SuiteArgs);
     fn get_report(&self) -> &SuiteReport;
 }
 
@@ -83,11 +84,19 @@ pub trait TestReporter: Send + Sync {
         total_duration: Duration,
         finished_at: DateTime<Utc>,
     ) -> ReporterResult<()>;
+
+    /// Receives the arguments supplied to the run, before the suite starts.
+    fn set_suite_args(&mut self, _args: crate::SuiteArgs) {}
+
     fn get_report(&self) -> &SuiteReport;
 }
 
 /// Blanket implementation: converts external TestReporter to internal TestReporterInternal
 impl<T: TestReporter + ?Sized> TestReporterInternal for T {
+    fn set_suite_args(&mut self, args: crate::SuiteArgs) {
+        TestReporter::set_suite_args(self, args);
+    }
+
     fn report_start<'a>(
         &'a mut self,
         suite_name: &'a str,

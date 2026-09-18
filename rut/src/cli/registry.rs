@@ -130,7 +130,13 @@ impl PluginRegistry {
             }
         }
 
-        for long in [CORE_RUNNER, CORE_REPORTER, CORE_FILTER, CORE_FAIL_FAST] {
+        for long in [
+            CORE_RUNNER,
+            CORE_REPORTER,
+            CORE_FILTER,
+            CORE_FAIL_FAST,
+            CORE_SUITE_ARGS,
+        ] {
             if let Some(owner) = longs.get(long) {
                 problems.push(format!("--{long} is reserved but is declared by {owner}"));
             }
@@ -157,6 +163,7 @@ pub(crate) const CORE_RUNNER: &str = "runner";
 pub(crate) const CORE_REPORTER: &str = "reporters";
 pub(crate) const CORE_FILTER: &str = "filter";
 pub(crate) const CORE_FAIL_FAST: &str = "fail-fast";
+pub(crate) const CORE_SUITE_ARGS: &str = "suite-args";
 
 fn check_unique_names<'a>(
     kind: &str,

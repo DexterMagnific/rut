@@ -1,5 +1,5 @@
 use crate::case::{TestCase, TestCaseInternal};
-use crate::report::{BoxFuture, TestContext};
+use crate::report::{BoxFuture, SuiteArgs, TestContext};
 use async_trait::async_trait;
 
 pub trait TestSuiteInternal: Send + Sync {
@@ -7,6 +7,8 @@ pub trait TestSuiteInternal: Send + Sync {
 
     fn context(&self) -> Option<&TestContext>;
     fn context_mut(&mut self) -> &mut Option<TestContext>;
+
+    fn set_args(&mut self, args: SuiteArgs);
 
     fn teardown_suite<'a>(&'a mut self) -> BoxFuture<'a, ()>;
 
@@ -40,6 +42,9 @@ pub trait TestSuite: Send + Sync {
     fn context(&self) -> Option<&TestContext>;
     fn context_mut(&mut self) -> &mut Option<TestContext>;
 
+    /// Receives the arguments supplied to the run, before setup executes.
+    fn set_args(&mut self, _args: SuiteArgs) {}
+
     async fn teardown_suite(&mut self);
 
     fn name(&self) -> &str;
@@ -59,6 +64,10 @@ impl<T: TestSuite + Clone + Sized + 'static> TestSuiteInternal for T {
 
     fn context_mut(&mut self) -> &mut Option<TestContext> {
         TestSuite::context_mut(self)
+    }
+
+    fn set_args(&mut self, args: SuiteArgs) {
+        TestSuite::set_args(self, args);
     }
 
     fn teardown_suite<'a>(&'a mut self) -> BoxFuture<'a, ()> {

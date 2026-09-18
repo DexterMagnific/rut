@@ -92,11 +92,11 @@ impl TestCase for ExampleCase {
         self.name
     }
 
-    async fn setup_case(&mut self, context: Option<&TestContext>) {
+    async fn setup_case(&mut self, context: Option<&TestContext>, _args: &rut::SuiteArgs) {
         example_context(context).record(format!("{} setup", self.name));
     }
 
-    async fn teardown_case(&mut self, context: Option<&TestContext>) {
+    async fn teardown_case(&mut self, context: Option<&TestContext>, _args: &rut::SuiteArgs) {
         example_context(context).record(format!("{} teardown", self.name));
     }
 
@@ -146,7 +146,7 @@ impl Test for ExampleTest {
         self.name
     }
 
-    async fn run(&self, context: Option<&TestContext>) -> TestResult {
+    async fn run(&self, context: Option<&TestContext>, _args: &rut::SuiteArgs) -> TestResult {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }

@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -40,6 +41,88 @@ suite! {
 }
 
 static MISSING_CONTEXT_TEST_RAN: AtomicBool = AtomicBool::new(false);
+
+static SUITE_ARG_TRACE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+suite! {
+    typename = SuiteArgsSuite;
+    name = "suite args";
+
+    setup {
+        SUITE_ARG_TRACE
+            .lock()
+            .unwrap()
+            .push(format!("suite setup {}", args.get_or("ip", "none")));
+    }
+
+    test_case(name = "case") {
+        setup {
+            SUITE_ARG_TRACE
+                .lock()
+                .unwrap()
+                .push(format!("case setup {}", args.get_or("ip", "none")));
+        }
+
+        test(name = "reads its arguments") {
+            let port = args.parsed::<u16>("port").unwrap();
+
+            if args.get("ip") == Some("10.0.0.1") && port == Some(8080) {
+                TestResult::passed()
+            } else {
+                TestResult::failed(format!("unexpected arguments: {:?}", args))
+            }
+        }
+
+        teardown {
+            SUITE_ARG_TRACE
+                .lock()
+                .unwrap()
+                .push(format!("case teardown {}", args.get_or("ip", "none")));
+        }
+    }
+
+    teardown {
+        SUITE_ARG_TRACE
+            .lock()
+            .unwrap()
+            .push(format!("suite teardown {}", args.get_or("ip", "none")));
+    }
+}
+
+#[tokio::test]
+async fn suite_arguments_reach_every_hook_and_test() {
+    let report = SequentialRunner::new()
+        .with_suite(Box::new(SuiteArgsSuite::new()))
+        .with_suite_arg("ip", "10.0.0.1")
+        .with_suite_arg("port", "8080")
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_passed, 1);
+    assert_eq!(report.total_failed, 0);
+    assert_eq!(
+        *SUITE_ARG_TRACE.lock().unwrap(),
+        [
+            "suite setup 10.0.0.1",
+            "case setup 10.0.0.1",
+            "case teardown 10.0.0.1",
+            "suite teardown 10.0.0.1",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn suites_run_without_arguments() {
+    let report = ParallelRunnerBuilder::new()
+        .with_suite(Box::new(ContextFreeSuite::new()))
+        .build()
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_passed, 1);
+}
 
 suite! {
     typename = MissingContextSuite;

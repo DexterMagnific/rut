@@ -375,8 +375,14 @@ fn expand_suite(declaration: SuiteDecl) -> syn::Result<proc_macro2::TokenStream>
 
     let setup_call = async_block_call(setup);
     let teardown_call = async_block_call(teardown);
+    // Cloning keeps the borrow of `self` free for the context assignment below.
+    let suite_args_binding = quote! {
+        #[allow(unused_variables)]
+        let args = self.args.clone();
+    };
     let setup_body = if let Some(context_type) = context.as_ref() {
         quote! {
+            #suite_args_binding
             let mut context = #rut::__private::ContextInitializer::<#context_type>::new();
             #setup_call
             let context = context.into_inner().expect(
@@ -385,10 +391,14 @@ fn expand_suite(declaration: SuiteDecl) -> syn::Result<proc_macro2::TokenStream>
             self.context = ::std::option::Option::Some(#rut::TestContext::new(context));
         }
     } else {
-        setup_call
+        quote! {
+            #suite_args_binding
+            #setup_call
+        }
     };
     let teardown_body = if let Some(context_type) = context.as_ref() {
         quote! {
+            #suite_args_binding
             let context = self.context.as_ref()
                 .expect("suite context is not initialized")
                 .downcast_ref::<#context_type>()
@@ -396,7 +406,10 @@ fn expand_suite(declaration: SuiteDecl) -> syn::Result<proc_macro2::TokenStream>
             #teardown_call
         }
     } else {
-        teardown_call
+        quote! {
+            #suite_args_binding
+            #teardown_call
+        }
     };
 
     Ok(quote! {
@@ -411,6 +424,7 @@ fn expand_suite(declaration: SuiteDecl) -> syn::Result<proc_macro2::TokenStream>
             #[derive(Clone)]
             pub struct #type_ident {
                 context: ::std::option::Option<#rut::TestContext>,
+                args: #rut::SuiteArgs,
                 test_cases: ::std::vec::Vec<::std::boxed::Box<dyn #rut::TestCase>>,
             }
 
@@ -418,6 +432,7 @@ fn expand_suite(declaration: SuiteDecl) -> syn::Result<proc_macro2::TokenStream>
                 pub fn new() -> Self {
                     Self {
                         context: ::std::option::Option::None,
+                        args: #rut::SuiteArgs::new(),
                         test_cases: ::std::vec![#(::std::boxed::Box::new(#case_factories)),*],
                     }
                 }
@@ -441,6 +456,10 @@ fn expand_suite(declaration: SuiteDecl) -> syn::Result<proc_macro2::TokenStream>
 
                 fn context_mut(&mut self) -> &mut ::std::option::Option<#rut::TestContext> {
                     &mut self.context
+                }
+
+                fn set_args(&mut self, args: #rut::SuiteArgs) {
+                    self.args = args;
                 }
 
                 async fn teardown_suite(&mut self) {
@@ -514,6 +533,11 @@ fn expand_case(
     } else {
         quote!(_context)
     };
+    // Bound from a differently named parameter so unused suite args stay warning free.
+    let args_binding = quote! {
+        #[allow(unused_variables)]
+        let args = __rut_args;
+    };
     let mut test_impls = Vec::new();
     let mut test_types = Vec::new();
 
@@ -573,8 +597,10 @@ fn expand_case(
                 async fn run(
                     &self,
                     #context_parameter: ::std::option::Option<&#rut::TestContext>,
+                    __rut_args: &#rut::SuiteArgs,
                 ) -> #rut::TestResult {
                     #context_binding
+                    #args_binding
                     let mut result: #rut::TestResult = (async #test_block).await;
                     result.name = #test_name.to_owned();
                     result.properties.extend(self.properties());
@@ -603,16 +629,20 @@ fn expand_case(
                 async fn setup_case(
                     &mut self,
                     #context_parameter: ::std::option::Option<&#rut::TestContext>,
+                    __rut_args: &#rut::SuiteArgs,
                 ) {
                     #context_binding
+                    #args_binding
                     #setup_call
                 }
 
                 async fn teardown_case(
                     &mut self,
                     #context_parameter: ::std::option::Option<&#rut::TestContext>,
+                    __rut_args: &#rut::SuiteArgs,
                 ) {
                     #context_binding
+                    #args_binding
                     #teardown_call
                 }
 

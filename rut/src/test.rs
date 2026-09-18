@@ -1,4 +1,4 @@
-use crate::report::{BoxFuture, SourceLocation, TestContext, TestResult};
+use crate::report::{BoxFuture, SourceLocation, SuiteArgs, TestContext, TestResult};
 use async_trait::async_trait;
 use std::time::Duration;
 
@@ -14,7 +14,11 @@ pub trait TestInternal: Send + Sync {
     fn properties(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-    fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult>;
+    fn run<'a>(
+        &'a self,
+        ctx: Option<&'a TestContext>,
+        args: &'a SuiteArgs,
+    ) -> BoxFuture<'a, TestResult>;
 }
 
 /// A single executable test belonging to a [`crate::TestCase`].
@@ -29,9 +33,9 @@ pub trait TestInternal: Send + Sync {
 /// basic test; override them to provide source information, a cooperative
 /// timeout, retry attempts, or static properties.
 ///
-/// `run` receives the optional suite context and may perform asynchronous
-/// work. Returning [`TestResult::failed`] marks the test as failed; returning
-/// [`TestResult::skipped`] excludes it from the failure count.
+/// `run` receives the optional suite context and the suite arguments, and may
+/// perform asynchronous work. Returning [`TestResult::failed`] marks the test as
+/// failed; returning [`TestResult::skipped`] excludes it from the failure count.
 #[async_trait]
 pub trait Test: Send + Sync {
     fn name(&self) -> &str;
@@ -47,7 +51,7 @@ pub trait Test: Send + Sync {
     fn properties(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-    async fn run(&self, ctx: Option<&TestContext>) -> TestResult;
+    async fn run(&self, ctx: Option<&TestContext>, args: &SuiteArgs) -> TestResult;
 }
 
 /// Blanket implementation: converts external Test to internal TestInternal
@@ -72,8 +76,12 @@ impl<T: Test + ?Sized> TestInternal for T {
         Test::properties(self)
     }
 
-    fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult> {
-        Box::pin(async move { self.run(ctx).await })
+    fn run<'a>(
+        &'a self,
+        ctx: Option<&'a TestContext>,
+        args: &'a SuiteArgs,
+    ) -> BoxFuture<'a, TestResult> {
+        Box::pin(async move { self.run(ctx, args).await })
     }
 }
 
@@ -89,7 +97,7 @@ mod tests {
             "manual"
         }
 
-        async fn run(&self, _ctx: Option<&TestContext>) -> TestResult {
+        async fn run(&self, _ctx: Option<&TestContext>, _args: &SuiteArgs) -> TestResult {
             TestResult::passed()
         }
     }

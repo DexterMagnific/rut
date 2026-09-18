@@ -1,4 +1,4 @@
-use crate::report::{TestContext, TestStatus};
+use crate::report::{SuiteArgs, TestContext, TestStatus};
 use crate::test::Test;
 use crate::{SourceLocation, TestResult};
 use std::any::Any;
@@ -33,8 +33,9 @@ where
 pub(crate) async fn run_test_with_timeout(
     test: &dyn Test,
     ctx: Option<&TestContext>,
+    args: &SuiteArgs,
 ) -> TestResult {
-    let future = catch_test_panic(test.run(ctx));
+    let future = catch_test_panic(test.run(ctx, args));
     let outcome = match test.timeout() {
         Some(timeout) => match tokio::time::timeout(timeout, future).await {
             Ok(outcome) => match outcome {
@@ -56,12 +57,13 @@ pub(crate) async fn run_test_with_timeout(
 pub(crate) async fn run_test_with_retries(
     test: &dyn Test,
     ctx: Option<&TestContext>,
+    args: &SuiteArgs,
 ) -> TestResult {
     let retries = test.retries().unwrap_or(0);
     let mut failed_attempts = 0;
 
     loop {
-        let mut result = run_test_with_timeout(test, ctx).await;
+        let mut result = run_test_with_timeout(test, ctx, args).await;
         if matches!(result.status, TestStatus::Passed) {
             if failed_attempts > 0 {
                 result.status = TestStatus::Unstable;
@@ -236,7 +238,11 @@ mod tests {
             vec![("category".to_owned(), "unit".to_owned())]
         }
 
-        async fn run(&self, _ctx: Option<&crate::TestContext>) -> TestResult {
+        async fn run(
+            &self,
+            _ctx: Option<&crate::TestContext>,
+            _args: &crate::SuiteArgs,
+        ) -> TestResult {
             panic!("boom")
         }
     }
@@ -271,12 +277,16 @@ mod tests {
                 ]
             }
 
-            async fn run(&self, _ctx: Option<&crate::TestContext>) -> TestResult {
+            async fn run(
+                &self,
+                _ctx: Option<&crate::TestContext>,
+                _args: &crate::SuiteArgs,
+            ) -> TestResult {
                 panic!("boom")
             }
         }
 
-        let result = run_test_with_retries(&PanicWithProperties, None).await;
+        let result = run_test_with_retries(&PanicWithProperties, None, &crate::SuiteArgs::new()).await;
         assert_eq!(result.status, crate::TestStatus::Failed);
         assert!(result.properties.contains(&("category".to_owned(), "unit".to_owned())));
         assert!(result.properties.contains(&("status".to_owned(), "property".to_owned())));

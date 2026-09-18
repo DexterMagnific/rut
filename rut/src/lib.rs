@@ -48,8 +48,8 @@ pub mod test;
 
 pub use case::{TestCase, TestCaseInternal};
 pub use report::{
-    BoxFuture, CaseReport, SourceLocation, SuiteReport, TestCaseInfo, TestContext, TestInfo,
-    TestResult, TestStatus,
+    BoxFuture, CaseReport, SourceLocation, SuiteArgs, SuiteReport, TestCaseInfo, TestContext,
+    TestInfo, TestResult, TestStatus,
 };
 pub use reporter::{
     GTestReporter, JUnitReporter, MultiReporter, ReporterResult, StdoutReporter, TestReporter,

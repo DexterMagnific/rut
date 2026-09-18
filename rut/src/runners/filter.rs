@@ -49,7 +49,7 @@ mod tests {
             self.0
         }
 
-        async fn run(&self, _ctx: Option<&TestContext>) -> TestResult {
+        async fn run(&self, _ctx: Option<&TestContext>, _args: &crate::SuiteArgs) -> TestResult {
             TestResult::passed()
         }
     }

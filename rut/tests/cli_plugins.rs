@@ -28,6 +28,21 @@ suite! {
     }
 }
 
+suite! {
+    typename = SuiteArgsCliSuite;
+    name = "suite args cli suite";
+
+    test_case(name = "arguments") {
+        test(name = "reads the forwarded address") {
+            if args.get("ip") == Some("10.0.0.1") && args.get("port") == Some("8080") {
+                TestResult::passed()
+            } else {
+                TestResult::failed(format!("unexpected arguments: {args:?}"))
+            }
+        }
+    }
+}
+
 struct CustomRunner(SequentialRunner);
 
 #[async_trait]
@@ -262,8 +277,38 @@ async fn rejects_conflicting_report_outputs() {
 }
 
 #[tokio::test]
-async fn rejects_a_repeated_reporters_option() {
+async fn forwards_everything_after_suite_args_to_the_suite() {
     let status = harness_status(
+        registry(),
+        || Box::new(SuiteArgsCliSuite::new()),
+        [
+            "rut",
+            "--runner",
+            "sequential",
+            "--suite-args",
+            "ip=10.0.0.1",
+            "port=8080",
+        ],
+    )
+    .await;
+
+    assert_eq!(status, 0);
+}
+
+#[tokio::test]
+async fn rejects_suite_arguments_that_are_not_key_value() {
+    let status = harness_status(
+        registry(),
+        || Box::new(SuiteArgsCliSuite::new()),
+        ["rut", "--suite-args", "ip"],
+    )
+    .await;
+
+    assert_eq!(status, 2);
+}
+
+#[tokio::test]
+async fn rejects_a_repeated_reporters_option() {    let status = harness_status(
         registry(),
         || Box::new(PluginCliSuite::new()),
         ["rut", "--reporters=stdout", "--reporters=junit"],

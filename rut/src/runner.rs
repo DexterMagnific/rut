@@ -1,7 +1,7 @@
 use crate::report::SuiteReport;
 use crate::reporter::{ReporterResult, TestReporter};
 use crate::suite::TestSuite;
-use crate::{BoxFuture, SourceLocation, Test, TestContext, TestResult};
+use crate::{BoxFuture, SourceLocation, SuiteArgs, Test, TestContext, TestResult};
 use async_trait::async_trait;
 use std::future::Future;
 
@@ -66,8 +66,9 @@ where
 pub async fn run_test_with_timeout(
     test: &dyn Test,
     ctx: Option<&TestContext>,
+    args: &SuiteArgs,
 ) -> TestResult {
-    crate::panic_capture::run_test_with_timeout(test, ctx).await
+    crate::panic_capture::run_test_with_timeout(test, ctx, args).await
 }
 
 /// Runs one test with panic capture, timeout handling, and declared retries.
@@ -79,8 +80,9 @@ pub async fn run_test_with_timeout(
 pub async fn run_test_with_retries(
     test: &dyn Test,
     ctx: Option<&TestContext>,
+    args: &SuiteArgs,
 ) -> TestResult {
-    crate::panic_capture::run_test_with_retries(test, ctx).await
+    crate::panic_capture::run_test_with_retries(test, ctx, args).await
 }
 
 #[async_trait]
@@ -97,6 +99,9 @@ pub trait TestRunner: Send + Sync {
     async fn run(self) -> ReporterResult<SuiteReport>
     where
         Self: Sized;
+
+    /// Receives the arguments forwarded to the suite and its reporter.
+    fn set_suite_args(&mut self, _args: SuiteArgs) {}
 
     /// Supplies the suite to execute.
     fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self
@@ -115,6 +120,30 @@ pub trait TestRunner: Send + Sync {
         self.set_reporter(reporter);
         self
     }
+
+    /// Supplies every suite argument at once.
+    fn with_suite_args(mut self, args: SuiteArgs) -> Self
+    where
+        Self: Sized,
+    {
+        self.set_suite_args(args);
+        self
+    }
+
+    /// Supplies one suite argument, keeping the ones already set.
+    fn with_suite_arg(self, key: impl Into<String>, value: impl Into<String>) -> Self
+    where
+        Self: Sized,
+    {
+        let mut args = self.suite_args().clone();
+        args.insert(key, value);
+        self.with_suite_args(args)
+    }
+
+    /// Returns the arguments set so far.
+    fn suite_args(&self) -> &SuiteArgs {
+        SuiteArgs::empty()
+    }
 }
 
 /// Object-safe mirror of [`TestRunner`].
@@ -125,6 +154,7 @@ pub trait TestRunner: Send + Sync {
 pub trait TestRunnerInternal: Send + Sync {
     fn set_suite(&mut self, suite: Box<dyn TestSuite>);
     fn set_reporter(&mut self, reporter: Box<dyn TestReporter>);
+    fn set_suite_args(&mut self, args: SuiteArgs);
     fn run_boxed(self: Box<Self>) -> BoxFuture<'static, ReporterResult<SuiteReport>>;
 }
 
@@ -138,6 +168,10 @@ where
 
     fn set_reporter(&mut self, reporter: Box<dyn TestReporter>) {
         TestRunner::set_reporter(self, reporter);
+    }
+
+    fn set_suite_args(&mut self, args: SuiteArgs) {
+        TestRunner::set_suite_args(self, args);
     }
 
     fn run_boxed(self: Box<Self>) -> BoxFuture<'static, ReporterResult<SuiteReport>> {

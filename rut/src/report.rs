@@ -193,6 +193,133 @@ impl TestContext {
     }
 }
 
+/// Key/value arguments supplied to a suite from outside, such as the address of
+/// a server the tests should connect to.
+///
+/// Unlike [`TestContext`], these are provided before the suite runs, so they are
+/// readable from suite setup as well as from case hooks and test bodies.
+/// Cloning is a refcount bump, which is what lets the parallel runner hand a
+/// copy to every spawned case.
+#[derive(Clone, Debug, Default)]
+pub struct SuiteArgs {
+    values: Arc<std::collections::BTreeMap<String, String>>,
+}
+
+impl SuiteArgs {
+    /// Creates an empty set of arguments.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns a shared empty set, used as the default for runners without args.
+    pub fn empty() -> &'static SuiteArgs {
+        static EMPTY: std::sync::OnceLock<SuiteArgs> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(SuiteArgs::default)
+    }
+
+    /// Adds or replaces one argument.
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        Arc::make_mut(&mut self.values).insert(key.into(), value.into());
+    }
+
+    /// Parses `KEY=VALUE` entries, rejecting those without a separator or key.
+    pub fn parse<I, S>(pairs: I) -> anyhow::Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        pairs
+            .into_iter()
+            .map(|pair| parse_suite_arg(pair.as_ref()))
+            .collect::<anyhow::Result<Vec<_>>>()
+            .map(|pairs| pairs.into_iter().collect())
+    }
+
+    /// Returns the raw value of an argument.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+
+    /// Returns the value of an argument, or `default` when it is absent.
+    pub fn get_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.get(key).unwrap_or(default)
+    }
+
+    /// Returns whether an argument was supplied.
+    pub fn contains(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+
+    /// Parses the value of an argument into the requested type.
+    pub fn parsed<T>(&self, key: &str) -> anyhow::Result<Option<T>>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        match self.get(key) {
+            None => Ok(None),
+            Some(raw) => raw.parse::<T>().map(Some).map_err(|error| {
+                anyhow::anyhow!("invalid value for suite argument '{key}': {error}")
+            }),
+        }
+    }
+
+    /// Parses the value of an argument, requiring it to be present.
+    pub fn required<T>(&self, key: &str) -> anyhow::Result<T>
+    where
+        T: std::str::FromStr,
+        T::Err: std::fmt::Display,
+    {
+        self.parsed(key)?
+            .ok_or_else(|| anyhow::anyhow!("missing suite argument '{key}'"))
+    }
+
+    /// Iterates over every argument in key order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.values
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
+
+fn parse_suite_arg(pair: &str) -> anyhow::Result<(String, String)> {
+    let (key, value) = pair
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("suite argument '{pair}' is not in KEY=VALUE form"))?;
+    let key = key.trim();
+
+    if key.is_empty() {
+        return Err(anyhow::anyhow!("suite argument '{pair}' has an empty key"));
+    }
+
+    Ok((key.to_string(), value.to_string()))
+}
+
+impl<K, V> FromIterator<(K, V)> for SuiteArgs
+where
+    K: Into<String>,
+    V: Into<String>,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(pairs: I) -> Self {
+        Self {
+            values: Arc::new(
+                pairs
+                    .into_iter()
+                    .map(|(key, value)| (key.into(), value.into()))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 /// Static suite and case information used to initialize a report.
 #[derive(Debug, Clone)]
 pub struct TestCaseInfo {

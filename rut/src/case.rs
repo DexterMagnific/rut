@@ -1,13 +1,21 @@
-use crate::report::{BoxFuture, TestContext};
+use crate::report::{BoxFuture, SuiteArgs, TestContext};
 use crate::test::{Test, TestInternal};
 use async_trait::async_trait;
 
 pub trait TestCaseInternal: Send + Sync + std::panic::UnwindSafe {
     fn name(&self) -> &str;
-    fn setup_case<'a>(&'a mut self, _ctx: Option<&'a TestContext>) -> BoxFuture<'a, ()> {
+    fn setup_case<'a>(
+        &'a mut self,
+        _ctx: Option<&'a TestContext>,
+        _args: &'a SuiteArgs,
+    ) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
-    fn teardown_case<'a>(&'a mut self, _ctx: Option<&'a TestContext>) -> BoxFuture<'a, ()> {
+    fn teardown_case<'a>(
+        &'a mut self,
+        _ctx: Option<&'a TestContext>,
+        _args: &'a SuiteArgs,
+    ) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
     fn tests(&self) -> Vec<Box<dyn TestInternal>>;
@@ -28,14 +36,14 @@ impl Clone for Box<dyn TestCaseInternal> {
 /// value. Case tests run sequentially, even when the enclosing suite uses
 /// [`crate::ParallelRunner`].
 ///
-/// The hooks receive the optional suite [`crate::TestContext`]. They are
-/// asynchronous and default to no-ops. Returning tests from [`tests`](Self::tests)
-/// determines the case's execution order.
+/// The hooks receive the optional suite [`crate::TestContext`] and the suite
+/// arguments. They are asynchronous and default to no-ops. Returning tests from
+/// [`tests`](Self::tests) determines the case's execution order.
 #[async_trait]
 pub trait TestCase: Send + Sync + std::panic::UnwindSafe {
     fn name(&self) -> &str;
-    async fn setup_case(&mut self, _ctx: Option<&TestContext>) {}
-    async fn teardown_case(&mut self, _ctx: Option<&TestContext>) {}
+    async fn setup_case(&mut self, _ctx: Option<&TestContext>, _args: &SuiteArgs) {}
+    async fn teardown_case(&mut self, _ctx: Option<&TestContext>, _args: &SuiteArgs) {}
     fn tests(&self) -> Vec<Box<dyn Test>>;
     fn clone_box(&self) -> Box<dyn TestCase>;
 }
@@ -52,12 +60,20 @@ impl<T: TestCase + ?Sized> TestCaseInternal for T {
         TestCase::name(self)
     }
 
-    fn setup_case<'a>(&'a mut self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, ()> {
-        Box::pin(async move { self.setup_case(ctx).await })
+    fn setup_case<'a>(
+        &'a mut self,
+        ctx: Option<&'a TestContext>,
+        args: &'a SuiteArgs,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move { self.setup_case(ctx, args).await })
     }
 
-    fn teardown_case<'a>(&'a mut self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, ()> {
-        Box::pin(async move { self.teardown_case(ctx).await })
+    fn teardown_case<'a>(
+        &'a mut self,
+        ctx: Option<&'a TestContext>,
+        args: &'a SuiteArgs,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move { self.teardown_case(ctx, args).await })
     }
 
     fn tests(&self) -> Vec<Box<dyn TestInternal>> {

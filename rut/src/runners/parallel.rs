@@ -29,6 +29,7 @@ pub struct ParallelRunner {
     reporter: Option<Box<dyn TestReporter>>,
     filters: Vec<String>,
     fail_fast: bool,
+    args: crate::SuiteArgs,
 }
 
 impl ParallelRunner {
@@ -41,6 +42,7 @@ impl ParallelRunner {
             reporter: None,
             filters: Vec::new(),
             fail_fast: false,
+            args: crate::SuiteArgs::new(),
         }
     }
 
@@ -53,6 +55,7 @@ impl ParallelRunner {
             reporter: None,
             filters: Vec::new(),
             fail_fast: false,
+            args: crate::SuiteArgs::new(),
         }
     }
 
@@ -194,6 +197,7 @@ impl ParallelRunnerBuilder {
             reporter: self.reporter,
             filters: self.filters,
             fail_fast: self.fail_fast,
+            args: crate::SuiteArgs::new(),
         }
     }
 }
@@ -214,12 +218,23 @@ impl crate::runner::TestRunner for ParallelRunner {
         self.reporter = Some(reporter);
     }
 
+    fn set_suite_args(&mut self, args: crate::SuiteArgs) {
+        self.args = args;
+    }
+
+    fn suite_args(&self) -> &crate::SuiteArgs {
+        &self.args
+    }
+
     async fn run(self) -> ReporterResult<SuiteReport> {
         let fail_fast = self.fail_fast;
-        let suite = self.suite.expect("suite required");
+        let args = self.args.clone();
+        let mut suite = self.suite.expect("suite required");
+        suite.set_args(args.clone());
         let mut reporter = self
             .reporter
             .unwrap_or_else(|| Box::new(crate::reporters::StdoutReporter::new()));
+        reporter.set_suite_args(args.clone());
         let suite_name = suite.name().to_owned();
 
         let selected_cases = select_cases(&suite_name, suite.test_cases(), &self.filters);
@@ -285,6 +300,7 @@ impl crate::runner::TestRunner for ParallelRunner {
             running.spawn(run_test_case(
                 queued.pop_front().expect("queued case should exist"),
                 ctx,
+                args.clone(),
             ));
         }
 
@@ -371,7 +387,7 @@ impl crate::runner::TestRunner for ParallelRunner {
                 && let Some(case) = queued.pop_front()
             {
                 let ctx = ctx.clone();
-                running.spawn(run_test_case(case, ctx));
+                running.spawn(run_test_case(case, ctx, args.clone()));
             }
         }
 
@@ -398,6 +414,7 @@ fn shuffle_queue<T, R: Rng + ?Sized>(queue: &mut [T], rng: &mut R) {
 async fn run_test_case(
     selected: SelectedCase,
     ctx: Option<crate::report::TestContext>,
+    args: crate::SuiteArgs,
 ) -> Result<CompletedCase, String> {
     let SelectedCase {
         name: case_name,
@@ -407,7 +424,7 @@ async fn run_test_case(
     let test_count = tests.len();
     let started_at = chrono::Utc::now();
     let case_total_start = Instant::now();
-    case.setup_case(ctx.as_ref()).await;
+    case.setup_case(ctx.as_ref(), &args).await;
     let case_duration_start = Instant::now();
 
     let mut results = Vec::new();
@@ -415,7 +432,7 @@ async fn run_test_case(
     for test in tests {
         let test_start = Instant::now();
         let mut result =
-            crate::runner::run_test_with_retries(test.as_ref(), ctx.as_ref()).await;
+            crate::runner::run_test_with_retries(test.as_ref(), ctx.as_ref(), &args).await;
         let duration = test_start.elapsed();
 
         if result.name.is_empty() {
@@ -436,7 +453,7 @@ async fn run_test_case(
     }
 
     let duration = case_duration_start.elapsed();
-    case.teardown_case(ctx.as_ref()).await;
+    case.teardown_case(ctx.as_ref(), &args).await;
     let finished_at = chrono::Utc::now();
 
     Ok(CompletedCase {

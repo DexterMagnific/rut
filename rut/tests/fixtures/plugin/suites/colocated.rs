@@ -15,5 +15,13 @@ suite! {
                 TestResult::failed("unexpected default label")
             }
         }
+
+        test(name = "sees forwarded suite arguments") {
+            match args.get("mode") {
+                Some("e2e") => TestResult::passed(),
+                Some(other) => TestResult::failed(format!("unexpected mode '{other}'")),
+                None => TestResult::skipped("no mode argument supplied"),
+            }
+        }
     }
 }
