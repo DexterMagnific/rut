@@ -53,7 +53,10 @@ pub use reporter::{
     GTestReporter, JUnitReporter, MultiReporter, ReporterResult, StdoutReporter, TestReporter,
     TestReporterInternal,
 };
-pub use runner::{ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunner};
+pub use runner::{
+    PanicInfo, ParallelRunner, ParallelRunnerBuilder, SequentialRunner, TestRunner,
+    catch_test_panic, run_test_with_retries, run_test_with_timeout,
+};
 pub use rut_macros::suite;
 pub use suite::{TestSuite, TestSuiteBuilder, TestSuiteInternal};
 pub use test::{Test, TestInternal};

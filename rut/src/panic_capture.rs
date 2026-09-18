@@ -10,14 +10,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, Once};
 use std::task::{Context, Poll};
 
-#[derive(Debug)]
-struct PanicRecord {
-    message: String,
-    location: Option<SourceLocation>,
-    backtrace: String,
-}
-
-type CaptureSlot = Arc<Mutex<Option<PanicRecord>>>;
+type CaptureSlot = Arc<Mutex<Option<crate::runner::PanicInfo>>>;
 
 thread_local! {
     static ACTIVE_CAPTURES: RefCell<Vec<CaptureSlot>> = const { RefCell::new(Vec::new()) };
@@ -25,7 +18,7 @@ thread_local! {
 
 static INSTALL_HOOK: Once = Once::new();
 
-async fn catch_test_panic<F>(future: F) -> Result<F::Output, PanicRecord>
+pub(crate) async fn catch_test_panic<F>(future: F) -> Result<F::Output, crate::runner::PanicInfo>
 where
     F: Future,
 {
@@ -99,7 +92,7 @@ impl<F> Future for CatchTestPanic<F>
 where
     F: Future,
 {
-    type Output = Result<F::Output, PanicRecord>;
+    type Output = Result<F::Output, crate::runner::PanicInfo>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         install_hook();
@@ -129,10 +122,12 @@ where
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .take()
-                    .unwrap_or_else(|| PanicRecord {
-                        message: panic_payload(payload.as_ref()),
-                        location: None,
-                        backtrace: Backtrace::force_capture().to_string(),
+                    .unwrap_or_else(|| {
+                        crate::runner::PanicInfo::new(
+                            panic_payload(payload.as_ref()),
+                            None,
+                            Backtrace::force_capture().to_string(),
+                        )
                     });
                 Poll::Ready(Err(record))
             }
@@ -163,11 +158,11 @@ fn capture_panic(info: &PanicHookInfo<'_>) -> bool {
         let mut slot = capture
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *slot = Some(PanicRecord {
-            message: panic_payload(info.payload()),
+        *slot = Some(crate::runner::PanicInfo::new(
+            panic_payload(info.payload()),
             location,
-            backtrace: Backtrace::force_capture().to_string(),
-        });
+            Backtrace::force_capture().to_string(),
+        ));
         true
     })
 }
@@ -182,14 +177,15 @@ fn panic_payload(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-fn panic_result(test: &dyn crate::Test, record: PanicRecord) -> TestResult {
+fn panic_result(test: &dyn crate::Test, record: crate::runner::PanicInfo) -> TestResult {
     let mut result = TestResult::failed(format!(
         "panic: {}\nstack backtrace:\n{}",
-        record.message, record.backtrace
+        record.message(),
+        record.backtrace()
     ));
     result.name = test.name().to_owned();
     result.properties = test.properties();
-    result.failure_location = record.location;
+    result.failure_location = record.location().cloned();
     result
 }
 
@@ -215,6 +211,19 @@ mod tests {
         assert!(result.message.unwrap().contains("stack backtrace:"));
     }
 
+    #[tokio::test]
+    async fn public_panic_helper_exposes_panic_details() {
+        let panic = crate::catch_test_panic(async {
+            panic!("public panic");
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(panic.message(), "public panic");
+        assert!(panic.location().is_some());
+        assert!(!panic.backtrace().is_empty());
+    }
+
     struct ManualPanicTest;
 
     #[async_trait::async_trait]
@@ -237,8 +246,8 @@ mod tests {
         let first = tokio::spawn(catch_test_panic(async { panic!("first panic") }));
         let second = tokio::spawn(catch_test_panic(async { panic!("second panic") }));
 
-        let first = first.await.unwrap().unwrap_err().message;
-        let second = second.await.unwrap().unwrap_err().message;
+        let first = first.await.unwrap().unwrap_err().message().to_owned();
+        let second = second.await.unwrap().unwrap_err().message().to_owned();
         assert!(first.contains("first panic"));
         assert!(!first.contains("second panic"));
         assert!(second.contains("second panic"));
