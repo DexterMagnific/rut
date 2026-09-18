@@ -15,6 +15,7 @@ pub struct SequentialRunner {
 }
 
 impl SequentialRunner {
+    /// Creates a runner that executes selected cases one at a time.
     pub fn new() -> Self {
         Self {
             suite: None,
@@ -24,11 +25,13 @@ impl SequentialRunner {
         }
     }
 
+    /// Adds a qualified-name substring filter.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filters.push(filter.into());
         self
     }
 
+    /// Stops admitting cases after the first failed case.
     pub fn fail_fast(mut self) -> Self {
         self.fail_fast = true;
         self

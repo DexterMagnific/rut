@@ -17,8 +17,21 @@ pub trait TestInternal: Send + Sync {
     fn run<'a>(&'a self, ctx: Option<&'a TestContext>) -> BoxFuture<'a, TestResult>;
 }
 
-/// User-facing trait - implement this in your test code
-/// Uses async_trait for clean async fn syntax
+/// A single executable test belonging to a [`crate::TestCase`].
+///
+/// Implement this trait when constructing suites manually. The [`crate::suite!`]
+/// macro generates the implementation for declarative tests. Implementations
+/// must be thread-safe because a test may run inside a spawned task when its
+/// case is executed by [`crate::ParallelRunner`].
+///
+/// The test name must remain stable and should match the name reported by the
+/// returned [`TestResult`]. The default metadata methods are sufficient for a
+/// basic test; override them to provide source information, a cooperative
+/// timeout, retry attempts, or static properties.
+///
+/// `run` receives the optional suite context and may perform asynchronous
+/// work. Returning [`TestResult::failed`] marks the test as failed; returning
+/// [`TestResult::skipped`] excludes it from the failure count.
 #[async_trait]
 pub trait Test: Send + Sync {
     fn name(&self) -> &str;

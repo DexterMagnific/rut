@@ -20,8 +20,17 @@ impl Clone for Box<dyn TestCaseInternal> {
     }
 }
 
-/// User-facing trait - implement this in your test code
-/// Uses async_trait for clean async fn syntax
+/// A group of tests with optional setup and teardown hooks.
+///
+/// Implement this trait to build a case manually. The [`crate::suite!`] macro
+/// generates cases from `test_case` blocks. Cases are cloned before execution,
+/// so [`clone_box`](Self::clone_box) must return an independent equivalent
+/// value. Case tests run sequentially, even when the enclosing suite uses
+/// [`crate::ParallelRunner`].
+///
+/// The hooks receive the optional suite [`crate::TestContext`]. They are
+/// asynchronous and default to no-ops. Returning tests from [`tests`](Self::tests)
+/// determines the case's execution order.
 #[async_trait]
 pub trait TestCase: Send + Sync + std::panic::UnwindSafe {
     fn name(&self) -> &str;

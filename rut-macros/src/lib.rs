@@ -301,6 +301,48 @@ fn parse_name(input: ParseStream<'_>) -> syn::Result<LitStr> {
     Ok(name)
 }
 
+/// Declares a `rut` test suite using a declarative syntax.
+///
+/// The declaration must contain a suite type and display name, followed by one
+/// or more test cases:
+///
+/// ```text
+/// suite! {
+///     typename = [pub] SuiteType;
+///     name = "Suite name";
+///     test_case(name = "case name") {
+///         test(name = "test name") {
+///             rut::TestResult::passed()
+///         }
+///     }
+/// }
+/// ```
+///
+/// The suite may also declare `context = ContextType;`, one `setup` block, and
+/// one `teardown` block. Cases may declare their own `setup` and `teardown`
+/// blocks. A test can declare string properties, a cooperative timeout in
+/// milliseconds, and a retry count:
+///
+/// ```text
+/// test(
+///     name = "eventually succeeds",
+///     category = "integration",
+///     timeout = "500",
+///     retries = "2"
+/// ) {
+///     rut::TestResult::passed()
+/// }
+/// ```
+///
+/// Test bodies are asynchronous and must return `rut::TestResult`. When a
+/// context is declared, suite setup receives a mutable `context` initializer,
+/// while case hooks and test bodies receive the typed context binding after the
+/// suite has initialized it.
+///
+/// The macro rejects duplicate suite, case, or test declarations, missing
+/// required names, suites without cases, and cases without tests at compile
+/// time. Helper Rust items may be placed inside suite and case bodies and are
+/// available to the generated code in that scope.
 #[proc_macro]
 pub fn suite(input: TokenStream) -> TokenStream {
     let declaration = parse_macro_input!(input as SuiteDecl);

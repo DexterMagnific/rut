@@ -22,8 +22,17 @@ impl Clone for Box<dyn TestSuiteInternal> {
     }
 }
 
-/// User-facing trait - implement this in your test code
-/// Uses async_trait for clean async fn syntax
+/// A collection of related [`crate::TestCase`] values and suite lifecycle hooks.
+///
+/// Implement this trait to construct a suite without the [`crate::suite!`]
+/// macro. A suite is moved into the runner, its setup hook runs once, selected
+/// cases execute, and its teardown hook runs after the cases finish. The
+/// `context` methods expose optional shared state to suite and case code.
+///
+/// Implementations must be [`Clone`] and sized when used with the built-in
+/// runners, because the runner requires an owned suite and uses the clone to
+/// isolate teardown handling. The generated implementation from `suite!`
+/// satisfies this requirement.
 #[async_trait]
 pub trait TestSuite: Send + Sync {
     async fn setup_suite(&mut self);

@@ -49,6 +49,12 @@ pub trait TestReporterInternal: Send + Sync {
 /// User-facing trait - implement this in your test code for custom reporters
 /// Uses async_trait for clean async fn syntax
 #[async_trait]
+/// Receives suite, case, and test events and produces a final report.
+///
+/// Reporter callbacks are invoked in runner order and may perform asynchronous
+/// I/O. Implement [`get_report`](Self::get_report) to return the accumulated
+/// [`crate::SuiteReport`. Use [`crate::MultiReporter`] to forward the same
+/// events to several reporters.
 pub trait TestReporter: Send + Sync {
     async fn report_start(
         &mut self,

@@ -6,6 +6,10 @@ use std::time::Duration;
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The outcome of a test or case.
+///
+/// `Failed` and `TimedOut` count as failures. `Unstable` means the test first
+/// failed and later passed after retries; it is not counted as a failure.
 pub enum TestStatus {
     NotYetRun,
     Running,
@@ -17,6 +21,7 @@ pub enum TestStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A source position associated with a test or failure.
 pub struct SourceLocation {
     pub file: String,
     pub line: u32,
@@ -34,6 +39,7 @@ impl SourceLocation {
 }
 
 #[derive(Debug, Clone)]
+/// The completed report for one suite execution.
 pub struct SuiteReport {
     pub suite_name: String,
     pub test_cases: Vec<CaseReport>,
@@ -47,6 +53,7 @@ pub struct SuiteReport {
 }
 
 #[derive(Debug, Clone)]
+/// Results and aggregate counts for one test case.
 pub struct CaseReport {
     pub name: String,
     pub tests: Vec<TestResult>,
@@ -61,6 +68,7 @@ pub struct CaseReport {
 }
 
 #[derive(Debug, Clone)]
+/// The final outcome and metadata for one test execution.
 pub struct TestResult {
     pub name: String,
     pub status: TestStatus,
@@ -74,6 +82,7 @@ pub struct TestResult {
 }
 
 impl TestResult {
+    /// Creates a passing result.
     pub fn passed() -> Self {
         Self {
             name: String::new(),
@@ -88,6 +97,7 @@ impl TestResult {
         }
     }
 
+    /// Creates a result for a test that passed after failed retry attempts.
     pub fn unstable(failed_attempts: u32) -> Self {
         let mut result = Self::passed();
         result.status = TestStatus::Unstable;
@@ -101,6 +111,7 @@ impl TestResult {
     }
 
     #[track_caller]
+    /// Creates a failed result and records the caller as its failure location.
     pub fn failed(message: impl Into<String>) -> Self {
         let caller = std::panic::Location::caller();
         Self {
@@ -120,6 +131,7 @@ impl TestResult {
         }
     }
 
+    /// Creates a skipped result with a human-readable reason.
     pub fn skipped(reason: impl Into<String>) -> Self {
         Self {
             name: String::new(),
@@ -148,36 +160,40 @@ impl TestResult {
         }
     }
 
+    /// Adds one property to this result.
     pub fn with_property(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.properties.push((key.into(), value.into()));
         self
     }
 
+    /// Adds several properties to this result.
     pub fn with_properties(mut self, props: Vec<(String, String)>) -> Self {
         self.properties.extend(props);
         self
     }
 }
 
-/// Type-erased context that can hold any data
+/// Type-erased, shareable context available to suite, case, and test code.
 #[derive(Clone)]
 pub struct TestContext {
     inner: Arc<dyn Any + Send + Sync>,
 }
 
 impl TestContext {
+    /// Stores a context value for later typed access.
     pub fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
         Self {
             inner: Arc::new(value),
         }
     }
 
+    /// Returns the stored value when it has the requested concrete type.
     pub fn downcast_ref<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
         self.inner.downcast_ref::<T>()
     }
 }
 
-/// Information needed to create a pre-populated suite report
+/// Static suite and case information used to initialize a report.
 #[derive(Debug, Clone)]
 pub struct TestCaseInfo {
     pub name: String,
@@ -185,12 +201,14 @@ pub struct TestCaseInfo {
 }
 
 #[derive(Debug, Clone)]
+/// Static information about one declared test.
 pub struct TestInfo {
     pub name: String,
     pub source: Option<SourceLocation>,
 }
 
 impl SuiteReport {
+    /// Creates a report pre-populated with the declared cases and tests.
     pub fn new(suite_name: &str, test_cases: &[TestCaseInfo], started_at: DateTime<Utc>) -> Self {
         let test_cases_vec: Vec<CaseReport> = test_cases
             .iter()

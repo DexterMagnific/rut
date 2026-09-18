@@ -163,6 +163,60 @@ suite! {
 }
 ```
 
+### Declarative DSL reference
+
+The `suite!` declaration has this shape:
+
+```rust
+suite! {
+    typename = [pub] SuiteType;
+    name = "Suite display name";
+    context = ContextType;
+
+    setup { /* optional async suite setup */ }
+
+    test_case(name = "case display name") {
+        setup { /* optional async case setup */ }
+
+        test(
+            name = "test display name",
+            property = "static string value",
+            timeout = "500",
+            retries = "2"
+        ) {
+            TestResult::passed()
+        }
+
+        teardown { /* optional async case teardown */ }
+    }
+
+    teardown { /* optional async suite teardown */ }
+}
+```
+
+The required header fields are `typename` and `name`. `typename` accepts an
+optional visibility, such as `pub`, and names the generated suite type. The
+suite must contain at least one `test_case`; every case must contain at least
+one `test`. Suite and case names, test names, and property values are string
+literals. Additional Rust helper items, such as structs and functions, may be
+declared in suite and case bodies.
+
+When `context = ContextType` is present, suite setup can initialize the shared
+context with `context.set(value)`. The generated `context` binding is then the
+typed value in suite teardown, case hooks, and test bodies. Context values must
+be usable across the runner's tasks (`Send + Sync`).
+
+Each test body is asynchronous and must return a `TestResult`. Static test
+properties are forwarded to reporters. `timeout` is a positive number of
+milliseconds and is cooperative: the test must yield at an `.await` point.
+`retries` is the number of additional attempts after the initial execution. A
+test that eventually passes is reported as `Unstable`; a test that exhausts
+its retries remains `Failed`.
+
+The macro reports invalid declarations at compile time, including missing
+required names, duplicate suite hooks, duplicate case or test names, a suite
+without cases, and a case without tests.
+
 * Suites run with `cargo rut` do not need a `main` function.
 * Returning `TestResult::failed` stops the remaining tests in that case. Other cases can still run.
 * Panics inside test bodies are converted into failed test results with captured location and backtrace.

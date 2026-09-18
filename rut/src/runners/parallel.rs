@@ -32,6 +32,7 @@ pub struct ParallelRunner {
 }
 
 impl ParallelRunner {
+    /// Creates a parallel runner with an explicit case concurrency limit.
     pub fn new(max_jobs: usize) -> Self {
         Self {
             max_jobs,
@@ -43,6 +44,7 @@ impl ParallelRunner {
         }
     }
 
+    /// Creates a parallel runner using the available CPU count as its limit.
     pub fn new_default() -> Self {
         Self {
             max_jobs: num_cpus::get(),
@@ -54,11 +56,13 @@ impl ParallelRunner {
         }
     }
 
+    /// Adds a qualified-name substring filter.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filters.push(filter.into());
         self
     }
 
+    /// Stops dispatching new cases after the first failed case.
     pub fn fail_fast(mut self) -> Self {
         self.fail_fast = true;
         self
@@ -81,6 +85,7 @@ pub struct ParallelRunnerBuilder {
 }
 
 impl ParallelRunnerBuilder {
+    /// Creates a builder using the available CPU count as its job limit.
     pub fn new() -> Self {
         Self {
             max_jobs: num_cpus::get(),
@@ -92,36 +97,43 @@ impl ParallelRunnerBuilder {
         }
     }
 
+    /// Sets the maximum number of cases that may run concurrently.
     pub fn with_max_jobs(mut self, n: usize) -> Self {
         self.max_jobs = n;
         self
     }
 
+    /// Randomizes case dispatch order while preserving declaration order in reports.
     pub fn shuffle_test_cases(mut self) -> Self {
         self.shuffle_test_cases = true;
         self
     }
 
+    /// Adds a qualified-name substring filter.
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
         self.filters.push(filter.into());
         self
     }
 
+    /// Stops dispatching new cases after the first failed case.
     pub fn fail_fast(mut self) -> Self {
         self.fail_fast = true;
         self
     }
 
+    /// Supplies the suite to execute.
     pub fn with_suite(mut self, suite: Box<dyn TestSuite>) -> Self {
         self.suite = Some(suite);
         self
     }
 
+    /// Supplies the reporter that receives execution events.
     pub fn with_reporter(mut self, reporter: Box<dyn TestReporter>) -> Self {
         self.reporter = Some(reporter);
         self
     }
 
+    /// Builds the configured parallel runner.
     pub fn build(self) -> ParallelRunner {
         ParallelRunner {
             max_jobs: self.max_jobs,

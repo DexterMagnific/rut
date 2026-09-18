@@ -4,6 +4,13 @@ use crate::suite::TestSuite;
 use async_trait::async_trait;
 
 #[async_trait]
+/// Executes a suite and delivers lifecycle events to a reporter.
+///
+/// Configure an implementation with [`with_suite`](Self::with_suite) and
+/// [`with_reporter`](Self::with_reporter), then call [`run`](Self::run).
+/// [`crate::SequentialRunner`] and [`crate::ParallelRunner`] provide the
+/// built-in execution strategies; implement this trait when integrating a
+/// different scheduling policy.
 pub trait TestRunner: Send + Sync {
     fn with_suite(self, suite: Box<dyn TestSuite>) -> Self
     where
